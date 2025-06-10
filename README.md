@@ -8,7 +8,7 @@ This repository contains two Python scripts for real-time voice-to-text transcri
 ## Features
 
 -   **Simple Control**: Start and stop recording with a single global hotkey.
--   **Clipboard Integration**: Transcribed text is automatically copied to your clipboard using `xclip`.
+-   **Clipboard Integration**: Transcribed text is automatically copied to your clipboard using `xclip` (for X11) or `wl-copy` (for Wayland).
 -   **Visual Feedback (Systray version)**: A tray icon indicates whether the script is idle (microphone) or recording (red dot).
 -   **Robust**: Includes PID file management to prevent multiple instances and proper resource cleanup.
 -   **Configurable**: Easily change the Gemini model, audio recording parameters, and more directly within the scripts.
@@ -20,19 +20,20 @@ This repository contains two Python scripts for real-time voice-to-text transcri
 You need the following command-line tools installed.
 
 -   `arecord`: For audio recording (part of ALSA).
--   `xclip`: For copying text to the clipboard.
+-   `xclip`: For copying text to the clipboard on **X11**.
+-   `wl-clipboard`: Provides `wl-copy` for clipboard on **Wayland**.
 -   `yad`: For the system tray icon (only for the `yad-systray` version).
 -   `file`: To determine the audio file's MIME type.
 
 On **Debian/Ubuntu**, you can install them with:
 ```bash
 sudo apt-get update
-sudo apt-get install alsa-utils xclip yad file
+sudo apt-get install alsa-utils xclip wl-clipboard yad file
 ```
 
 On **Fedora**, you can install them with:
 ```bash
-sudo dnf install alsa-utils xclip yad file
+sudo dnf install alsa-utils xclip wl-clipboard yad file
 ```
 
 ### Python Dependencies
@@ -133,7 +134,32 @@ To test it, run it from your terminal:
 ```
 You should see a microphone icon appear in your system tray. Now try your hotkey. The icon should turn into a red dot while recording. Press it again to stop, and the transcribed text will be copied to your clipboard.
 
-## 4. Automatic Startup on Login (using `crontab`)
+## 4. Automatic Startup on Login
+
+### Method 1: Using Desktop Environment Autostart (Recommended for Wayland)
+
+Using `@reboot` with `crontab` can be unreliable on Wayland for applications that need to interact with your graphical session (like `yad` or `wl-copy`). The environment variables (`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`) required for them to work are often not available in the `cron` environment.
+
+A more robust method is to use your desktop environment's autostart settings.
+
+1.  Create a `.desktop` file in `~/.config/autostart/`, for example `voice-input-gemini.desktop`.
+2.  Add the following content, making sure to use the **absolute path** to your script:
+
+    ```ini
+    [Desktop Entry]
+    Name=Gemini Voice Input
+    Comment=Starts the Gemini voice transcription script
+    Exec=/home/your_user/scripts/gemini-voice/voiceai.gemini.yad-systray.py
+    Icon=audio-input-microphone
+    Terminal=false
+    Type=Application
+    Categories=Utility;
+    ```
+3.  Make it executable: `chmod +x ~/.config/autostart/voice-input-gemini.desktop`.
+
+This will start the script correctly within your user session after you log in.
+
+### Method 2: Using `crontab` (For X11 or non-desktop setups)
 
 To make this tool truly useful, you want it to start automatically when you log in. You can achieve this using `crontab`.
 
@@ -150,12 +176,14 @@ To make this tool truly useful, you want it to start automatically when you log 
 
 *(Note: If you chose to use the headless `voiceai.gemini.py` script, change the filename in the command accordingly. The `export DISPLAY=:0` part is only necessary for the `yad-systray` version but does no harm for the headless one.)*
 
-### Explanation of the `crontab` line:
+1.  Open your user's crontab for editing:
+    ```bash
+    crontab -e
+    ```
 
--   `@reboot`: This special directive tells `cron` to run the command once after the system boots up.
--   `export DISPLAY=:0`: This is **critical**. `cron` jobs run in a minimal environment and don't know which display your graphical session is on. `DISPLAY=:0` is usually correct for the primary user session. This allows `yad` to create the tray icon.
--   `/path/to/your/script/...`: You must use the full path to the script.
--   `>> /tmp/voice_input_gemini.log 2>&1`: This redirects all output (both standard and error) from the script into a log file. This is highly recommended for troubleshooting if the script fails to start. You can check this file for errors: `cat /tmp/voice_input_gemini.log`.
+2.  Add the following line to the bottom of the file. **You must replace `/path/to/your/script/` with the actual, absolute path to the script.**
 
-After adding the line and saving the file, the script will automatically launch the next time you reboot your system.
+    ```crontab
+    @reboot export DISPLAY=:0 && /path/to/your/script/voiceai.gemini.yad-systray.py >> /tmp/voice_input_gemini.log 2>&1
+    ```
 

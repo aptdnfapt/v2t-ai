@@ -29,6 +29,7 @@ ARECORD_CHANNELS = "1"
 # --- Global State ---
 is_recording = False
 arecord_process = None
+clipboard_command = []
 
 # --- Helper Functions ---
 def log_message(message):
@@ -145,30 +146,32 @@ def process_audio():
 
     if transcribed_text:
         log_message(f"Transcription received from Gemini: '{transcribed_text}'")
-        log_message("Copying transcription to clipboard using xclip...")
-        xclip_command = ["xclip", "-selection", "clipboard"]
-        x_env = os.environ.copy()
-        display_var = os.getenv('DISPLAY_FOR_XCLIP', ':0')
-        if 'DISPLAY' not in x_env:
-            x_env['DISPLAY'] = display_var
-        x_authority_file_path = os.getenv('XAUTHORITY_FOR_XCLIP', os.path.expanduser("~/.Xauthority"))
-        if 'XAUTHORITY' not in x_env and os.path.exists(x_authority_file_path):
-            x_env['XAUTHORITY'] = x_authority_file_path
-        elif not os.path.exists(x_authority_file_path) and 'XAUTHORITY' not in x_env:
-             log_message(f"Warning: XAUTHORITY file not found at {x_authority_file_path} and not set. xclip might fail.")
-
-        xclip_successful = False
-        try:
-            subprocess.run(xclip_command, input=transcribed_text.encode('utf-8'), check=True, env=x_env)
-            log_message("Transcription copied to clipboard.")
-            xclip_successful = True
-        except FileNotFoundError:
-            log_message("ERROR: xclip command not found. Cannot copy to clipboard.")
-        except subprocess.CalledProcessError as e:
-            log_message(f"Error running xclip: {e}")
-            if e.stderr: log_message(f"xclip stderr: {e.stderr.decode(errors='ignore').strip()}")
+        log_message(f"Copying transcription to clipboard using '{clipboard_command[0]}'...")
         
-        if xclip_successful: # Only delete if transcription AND xclip were successful
+        copy_env = os.environ.copy()
+        # Environment setup is specific to xclip
+        if clipboard_command[0] == "xclip":
+            display_var = os.getenv('DISPLAY_FOR_XCLIP', ':0')
+            if 'DISPLAY' not in copy_env:
+                copy_env['DISPLAY'] = display_var
+            x_authority_file_path = os.getenv('XAUTHORITY_FOR_XCLIP', os.path.expanduser("~/.Xauthority"))
+            if 'XAUTHORITY' not in copy_env and os.path.exists(x_authority_file_path):
+                copy_env['XAUTHORITY'] = x_authority_file_path
+            elif not os.path.exists(x_authority_file_path) and 'XAUTHORITY' not in copy_env:
+                 log_message(f"Warning: XAUTHORITY file not found at {x_authority_file_path} and not set. xclip might fail.")
+
+        copy_successful = False
+        try:
+            subprocess.run(clipboard_command, input=transcribed_text.encode('utf-8'), check=True, env=copy_env)
+            log_message("Transcription copied to clipboard.")
+            copy_successful = True
+        except FileNotFoundError:
+            log_message(f"ERROR: {clipboard_command[0]} command not found. Cannot copy to clipboard.")
+        except subprocess.CalledProcessError as e:
+            log_message(f"Error running {clipboard_command[0]}: {e}")
+            if e.stderr: log_message(f"{clipboard_command[0]} stderr: {e.stderr.decode(errors='ignore').strip()}")
+        
+        if copy_successful: # Only delete if transcription AND clipboard copy were successful
             if os.path.exists(AUDIO_FILE_TMP):
                 try:
                     os.remove(AUDIO_FILE_TMP)
@@ -226,9 +229,22 @@ def toggle_recording_handler(signum, frame):
             log_message(f"Failed to start arecord: {e}"); is_recording = False
 
 def main():
+    global clipboard_command
+    session_type = os.getenv("XDG_SESSION_TYPE", "x11").lower()
+    clipboard_tool = ""
+
+    if "wayland" in session_type:
+        log_message("Wayland session detected. Using wl-copy for clipboard.")
+        clipboard_tool = "wl-copy"
+        clipboard_command = ["wl-copy"]
+    else:
+        log_message("X11 or unknown session type detected. Using xclip for clipboard.")
+        clipboard_tool = "xclip"
+        clipboard_command = ["xclip", "-selection", "clipboard"]
+
     if GEMINI_API_KEY == "YOUR_API_KEY_HERE" or not GEMINI_API_KEY:
         log_message("CRITICAL ERROR: GEMINI_API_KEY is not set."); sys.exit(1)
-    if not all(check_command(cmd) for cmd in ["arecord", "xclip"]): sys.exit(1)
+    if not all(check_command(cmd) for cmd in ["arecord", clipboard_tool]): sys.exit(1)
     check_command("file")
 
     if os.path.exists(PID_FILE):

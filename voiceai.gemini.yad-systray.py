@@ -36,6 +36,7 @@ YAD_NOTIFICATION_COMMAND_CLICK = ":" # No-op command for click, or your desired 
 is_recording = False
 arecord_process = None
 yad_process = None
+clipboard_command = []
 
 # --- Helper Functions ---
 def log_message(message):
@@ -134,20 +135,21 @@ def process_audio():
     transcribed_text = transcribe_with_gemini(AUDIO_FILE_TMP)
     if transcribed_text:
         log_message(f"Gemini: '{transcribed_text}'")
-        xclip_command = ["xclip", "-selection", "clipboard"]
-        x_env = os.environ.copy()
-        display_var = os.getenv('DISPLAY_FOR_XCLIP', ':0')
-        if 'DISPLAY' not in x_env: x_env['DISPLAY'] = display_var
-        x_authority_file_path = os.getenv('XAUTHORITY_FOR_XCLIP', os.path.expanduser("~/.Xauthority"))
-        if 'XAUTHORITY' not in x_env and os.path.exists(x_authority_file_path): x_env['XAUTHORITY'] = x_authority_file_path
+        log_message(f"Copying transcription to clipboard using '{clipboard_command[0]}'...")
+        copy_env = os.environ.copy()
+        if clipboard_command[0] == "xclip":
+            display_var = os.getenv('DISPLAY_FOR_XCLIP', ':0')
+            if 'DISPLAY' not in copy_env: copy_env['DISPLAY'] = display_var
+            x_authority_file_path = os.getenv('XAUTHORITY_FOR_XCLIP', os.path.expanduser("~/.Xauthority"))
+            if 'XAUTHORITY' not in copy_env and os.path.exists(x_authority_file_path): copy_env['XAUTHORITY'] = x_authority_file_path
         
-        xclip_successful = False
+        copy_successful = False
         try:
-            subprocess.run(xclip_command, input=transcribed_text.encode('utf-8'), check=True, env=x_env)
-            log_message("Copied to clipboard."); xclip_successful = True
-        except Exception as e: log_message(f"Error xclip: {e}")
+            subprocess.run(clipboard_command, input=transcribed_text.encode('utf-8'), check=True, env=copy_env)
+            log_message("Copied to clipboard."); copy_successful = True
+        except Exception as e: log_message(f"Error with {clipboard_command[0]}: {e}")
         
-        if xclip_successful:
+        if copy_successful:
             if os.path.exists(AUDIO_FILE_TMP):
                 try: os.remove(AUDIO_FILE_TMP); log_message(f"Removed: {AUDIO_FILE_TMP}")
                 except OSError as e: log_message(f"Error removing temp audio: {e}")
@@ -212,10 +214,22 @@ def start_yad_notification():
         return None
 
 def main():
-    global yad_process
+    global yad_process, clipboard_command
+    session_type = os.getenv("XDG_SESSION_TYPE", "x11").lower()
+    clipboard_tool = ""
+
+    if "wayland" in session_type:
+        log_message("Wayland session detected. Using wl-copy for clipboard.")
+        clipboard_tool = "wl-copy"
+        clipboard_command = ["wl-copy"]
+    else:
+        log_message("X11 or unknown session type detected. Using xclip for clipboard.")
+        clipboard_tool = "xclip"
+        clipboard_command = ["xclip", "-selection", "clipboard"]
+
     if GEMINI_API_KEY == "YOUR_API_KEY_HERE" or not GEMINI_API_KEY:
         log_message("CRITICAL: GEMINI_API_KEY not set."); sys.exit(1)
-    if not all(check_command(cmd) for cmd in ["arecord", "xclip", "yad"]):
+    if not all(check_command(cmd) for cmd in ["arecord", clipboard_tool, "yad"]):
         sys.exit(1)
     
     yad_process = start_yad_notification()

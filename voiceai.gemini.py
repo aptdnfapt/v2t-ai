@@ -9,14 +9,14 @@ import shutil
 import base64
 import json
 import requests # For making HTTP requests to Gemini API
+from dotenv import load_dotenv
 
 # --- Configuration ---
-# IMPORTANT: Set your Gemini API Key. Best to use an environment variable.
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBMMmIy66XFrUMZSoIRp2xiJeXEbvakGc4")
-# You can choose your model here
-GEMINI_MODEL_NAME = "gemini-2.5-flash-preview-05-20" # Or "gemini-1.5-pro-latest" etc.
-# Prompt for Gemini (can be simple for transcription)
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL_NAME = "gemini-2.5-flash-preview-05-20"
 GEMINI_PROMPT_TEXT = "Transcribe this audio recording."
+
 
 PID_FILE = "/tmp/voice_input_gemini.pid"
 AUDIO_FILE_TMP = "/tmp/voice_input_audio.wav"

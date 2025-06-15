@@ -9,9 +9,11 @@ import shutil
 import base64
 import json
 import requests
+from dotenv import load_dotenv
 
 # --- Configuration ---
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBA_Hm4Cll7TEdDFLpAatJJkKOfq4GI4nM")
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL_NAME = "gemini-2.5-flash-preview-05-20"
 GEMINI_PROMPT_TEXT = "Transcribe this audio recording."
 

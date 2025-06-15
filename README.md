@@ -60,15 +60,17 @@ cd ~/scripts/gemini-voice
 ### Step 2.2: Set Your Gemini API Key
 
 1.  Obtain a Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
-2.  The script needs access to this key via an environment variable named `GEMINI_API_KEY`. The most reliable way to set this is to add it to your shell's startup file.
-
-Open `~/.profile` (or `~/.bash_profile`, `~/.zprofile`) and add the following line, replacing `YOUR_API_KEY_HERE` with your actual key:
-
+2.  run 
 ```bash
-export GEMINI_API_KEY="YOUR_API_KEY_HERE"
+cp .env.example .env 
+```
+   use your editor and then add your api key 
+```bash
+nano .env
 ```
 
-3.  Apply the change by running `source ~/.profile` or by logging out and back in.
+
+
 
 ### Step 2.3: Make Scripts Executable
 

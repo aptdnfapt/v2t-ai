@@ -14,8 +14,8 @@ from dotenv import load_dotenv
 # --- Configuration ---
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL_NAME = "gemini-2.5-flash-preview-05-20"
-GEMINI_PROMPT_TEXT = "Transcribe this audio recording."
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash-latest")
+GEMINI_PROMPT_TEXT = os.getenv("GEMINI_PROMPT_TEXT", "Transcribe this audio recording.")
 
 
 PID_FILE = "/tmp/voice_input_gemini.pid"

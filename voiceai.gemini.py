@@ -8,14 +8,14 @@ import time
 import shutil
 import base64
 import json
-import requests # For making HTTP requests to Gemini API
+import requests
 from dotenv import load_dotenv
 
 # --- Configuration ---
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL_NAME = "gemini-2.5-flash-preview-05-20"
-GEMINI_PROMPT_TEXT = "Transcribe this audio recording."
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash-latest")
+GEMINI_PROMPT_TEXT = os.getenv("GEMINI_PROMPT_TEXT", "Transcribe this audio recording.")
 
 
 PID_FILE = "/tmp/voice_input_gemini.pid"
@@ -46,20 +46,11 @@ def cleanup_resources():
     log_message("Cleaning up resources...")
     if arecord_process and arecord_process.poll() is None:
         arecord_process.terminate()
-        try:
-            arecord_process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            arecord_process.kill()
-            arecord_process.wait()
-        arecord_process = None
-
+        try: arecord_process.wait(timeout=1)
+        except subprocess.TimeoutExpired: arecord_process.kill(); arecord_process.wait()
     if os.path.exists(PID_FILE):
         try: os.remove(PID_FILE)
         except OSError as e: log_message(f"Error removing PID file: {e}")
-    # Note: AUDIO_FILE_TMP is handled by process_audio or explicitly on very early exit
-    # if os.path.exists(AUDIO_FILE_TMP): # Only if it was never processed
-    # try: os.remove(AUDIO_FILE_TMP)
-    # except OSError as e: log_message(f"Error removing temp audio file during cleanup: {e}")
 
 def handle_exit_signal(signum, frame):
     log_message(f"Received signal {signum}. Exiting gracefully.")
@@ -72,14 +63,13 @@ def get_audio_mime_type(file_path):
         return result.stdout.strip()
     except FileNotFoundError:
         log_message("INFO: 'file' command not found. Defaulting MIME type to 'audio/wav'.")
-        return "audio/wav" # Default if 'file' is not available
+        return "audio/wav"
     except subprocess.CalledProcessError as e:
         log_message(f"Error determining MIME type: {e}. Defaulting to 'audio/wav'.")
-        return "audio/wav" # Default on error
+        return "audio/wav"
     except Exception as e:
         log_message(f"Unexpected error in get_audio_mime_type: {e}. Defaulting to 'audio/wav'.")
         return "audio/wav"
-
 
 def transcribe_with_gemini(audio_file_path):
     if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_API_KEY_HERE":
@@ -90,7 +80,6 @@ def transcribe_with_gemini(audio_file_path):
         return None
 
     mime_type = get_audio_mime_type(audio_file_path)
-    # No need to check mime_type for None here, as get_audio_mime_type now always returns a string.
 
     try:
         with open(audio_file_path, "rb") as af:
@@ -100,8 +89,7 @@ def transcribe_with_gemini(audio_file_path):
         return None
 
     json_payload = {
-        "contents": [{"parts": [{"text": GEMINI_PROMPT_TEXT}, {"inlineData": {"mimeType": mime_type, "data": base64_audio_data}}]}],
-        # "generationConfig": { "temperature": 0.2, "topP": 0.8, "topK": 40 } # Optional
+        "contents": [{"parts": [{"text": GEMINI_PROMPT_TEXT}, {"inlineData": {"mimeType": mime_type, "data": base64_audio_data}}]}]
     }
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
@@ -139,9 +127,6 @@ def transcribe_with_gemini(audio_file_path):
         return None
 
 def process_audio():
-    """Handles transcription and clipboard copying.
-    Only deletes audio file on successful transcription and copy.
-    """
     transcribed_text = None
     max_retries = 2
     for attempt in range(max_retries + 1):
@@ -150,91 +135,59 @@ def process_audio():
             break
         if attempt < max_retries:
             log_message(f"Error during transcription, retrying ({attempt + 1}/{max_retries})...")
-            time.sleep(1) # Wait a second before retrying
+            time.sleep(1)
 
     if transcribed_text:
-        log_message(f"Transcription received from Gemini: '{transcribed_text}'")
+        log_message(f"Gemini: '{transcribed_text}'")
         log_message(f"Copying transcription to clipboard using '{clipboard_command[0]}'...")
-
         copy_env = os.environ.copy()
-        # Environment setup is specific to xclip
         if clipboard_command[0] == "xclip":
             display_var = os.getenv('DISPLAY_FOR_XCLIP', ':0')
-            if 'DISPLAY' not in copy_env:
-                copy_env['DISPLAY'] = display_var
+            if 'DISPLAY' not in copy_env: copy_env['DISPLAY'] = display_var
             x_authority_file_path = os.getenv('XAUTHORITY_FOR_XCLIP', os.path.expanduser("~/.Xauthority"))
-            if 'XAUTHORITY' not in copy_env and os.path.exists(x_authority_file_path):
-                copy_env['XAUTHORITY'] = x_authority_file_path
-            elif not os.path.exists(x_authority_file_path) and 'XAUTHORITY' not in copy_env:
-                 log_message(f"Warning: XAUTHORITY file not found at {x_authority_file_path} and not set. xclip might fail.")
+            if 'XAUTHORITY' not in copy_env and os.path.exists(x_authority_file_path): copy_env['XAUTHORITY'] = x_authority_file_path
 
         copy_successful = False
         try:
             subprocess.run(clipboard_command, input=transcribed_text.encode('utf-8'), check=True, env=copy_env)
-            log_message("Transcription copied to clipboard.")
-            copy_successful = True
-        except FileNotFoundError:
-            log_message(f"ERROR: {clipboard_command[0]} command not found. Cannot copy to clipboard.")
-        except subprocess.CalledProcessError as e:
-            log_message(f"Error running {clipboard_command[0]}: {e}")
-            if e.stderr: log_message(f"{clipboard_command[0]} stderr: {e.stderr.decode(errors='ignore').strip()}")
+            log_message("Copied to clipboard."); copy_successful = True
+        except Exception as e: log_message(f"Error with {clipboard_command[0]}: {e}")
 
-        if copy_successful: # Only delete if transcription AND clipboard copy were successful
+        if copy_successful:
             if os.path.exists(AUDIO_FILE_TMP):
-                try:
-                    os.remove(AUDIO_FILE_TMP)
-                    log_message(f"Removed temporary audio file: {AUDIO_FILE_TMP}")
-                except OSError as e:
-                    log_message(f"Error removing temporary audio file after successful processing: {e}")
-        else:
-            log_message(f"Clipboard copy failed. Audio file {AUDIO_FILE_TMP} will be RETAINED for debugging.")
-
-    else: # This block executes if transcribed_text is None (i.e., an error occurred during Gemini call)
-        log_message("No transcription received from Gemini after all retries.")
-        log_message(f"Audio file {AUDIO_FILE_TMP} will be RETAINED for debugging.")
-        # DO NOT delete AUDIO_FILE_TMP here
+                try: os.remove(AUDIO_FILE_TMP); log_message(f"Removed: {AUDIO_FILE_TMP}")
+                except OSError as e: log_message(f"Error removing temp audio: {e}")
+        else: log_message(f"Clipboard copy failed. Audio RETAINED: {AUDIO_FILE_TMP}")
+    else:
+        log_message("No transcription from Gemini or API error after all retries.")
+        log_message(f"Audio RETAINED: {AUDIO_FILE_TMP}")
 
 def toggle_recording_handler(signum, frame):
     global is_recording, arecord_process
     if is_recording:
-        log_message("Signal received: Stopping recording...")
+        log_message("Signal: Stopping record...")
         if arecord_process and arecord_process.poll() is None:
             arecord_process.terminate()
-            try: arecord_process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                arecord_process.kill()
-                arecord_process.wait()
-            arecord_process = None
+            try: arecord_process.wait(timeout=1)
+            except: arecord_process.kill(); arecord_process.wait()
         is_recording = False
-        if os.path.exists(AUDIO_FILE_TMP):
-            process_audio()
-        else:
-            log_message("Recording stopped, but no audio file found to process.")
+        if os.path.exists(AUDIO_FILE_TMP): process_audio()
+        else: log_message("No audio file to process.")
     else:
-        log_message("Signal received: Starting recording...")
+        log_message("Signal: Starting record...")
         if os.path.exists(AUDIO_FILE_TMP):
-            # Overwrite/remove previous temp file if starting new recording
             try: os.remove(AUDIO_FILE_TMP)
-            except OSError as e: log_message(f"Could not remove old temp file: {e}")
-
-        arecord_command = [
-            "arecord", "-D", ARECORD_DEVICE, "-f", ARECORD_FORMAT,
-            "-r", ARECORD_RATE, "-c", ARECORD_CHANNELS, "-t", "wav", AUDIO_FILE_TMP
-        ]
+            except OSError as e: log_message(f"No old temp file: {e}")
+        arecord_command = ["arecord", "-D", ARECORD_DEVICE, "-f", ARECORD_FORMAT, "-r", ARECORD_RATE, "-c", ARECORD_CHANNELS, "-t", "wav", AUDIO_FILE_TMP]
         try:
             arecord_process = subprocess.Popen(arecord_command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             time.sleep(0.1)
             if arecord_process.poll() is not None:
-                err_msg = arecord_process.stderr.read().decode(errors='ignore').strip() if arecord_process.stderr else "Unknown"
-                log_message(f"ERROR: arecord failed. Stderr: {err_msg}")
-                is_recording = False; arecord_process = None
-            else:
-                is_recording = True
-                log_message(f"Recording started to {AUDIO_FILE_TMP}. PID: {arecord_process.pid}")
-        except FileNotFoundError:
-            log_message("ERROR: arecord not found."); is_recording = False
-        except Exception as e:
-            log_message(f"Failed to start arecord: {e}"); is_recording = False
+                err_msg = arecord_process.stderr.read().decode(errors='ignore').strip()
+                log_message(f"ERROR: arecord failed: {err_msg}")
+                is_recording = False
+            else: is_recording = True; log_message(f"Recording to {AUDIO_FILE_TMP}")
+        except Exception as e: log_message(f"Failed arecord: {e}"); is_recording = False
 
 def main():
     global clipboard_command
@@ -251,31 +204,32 @@ def main():
         clipboard_command = ["xclip", "-selection", "clipboard"]
 
     if GEMINI_API_KEY == "YOUR_API_KEY_HERE" or not GEMINI_API_KEY:
-        log_message("CRITICAL ERROR: GEMINI_API_KEY is not set."); sys.exit(1)
-    if not all(check_command(cmd) for cmd in ["arecord", clipboard_tool]): sys.exit(1)
+        log_message("CRITICAL: GEMINI_API_KEY not set."); sys.exit(1)
+    if not all(check_command(cmd) for cmd in ["arecord", clipboard_tool]):
+        sys.exit(1)
     check_command("file")
 
     if os.path.exists(PID_FILE):
         try:
             with open(PID_FILE, 'r') as f: pid = int(f.read().strip())
-            os.kill(pid, 0)
-            log_message(f"Script already running (PID {pid}). Exiting."); sys.exit(1)
+            os.kill(pid, 0); log_message(f"Script already running (PID {pid}). Exiting."); sys.exit(1)
         except (OSError, ValueError):
-            log_message(f"Stale PID file ({PID_FILE}). Removing.")
+            log_message(f"Stale PID file ({PID_FILE}). Removing.");
             try: os.remove(PID_FILE)
             except OSError as e: log_message(f"Could not remove stale PID file: {e}."); sys.exit(1)
     try:
         with open(PID_FILE, 'w') as f: f.write(str(os.getpid()))
-    except IOError as e: log_message(f"Error writing PID file {PID_FILE}: {e}"); sys.exit(1)
+    except IOError as e: log_message(f"PID write error: {e}"); sys.exit(1)
 
-    log_message(f"Gemini Voice Input script started. PID: {os.getpid()}. Listening for SIGUSR1.")
+    log_message(f"Script started (PID {os.getpid()}). Listening for SIGUSR1 to toggle recording.")
+
     signal.signal(signal.SIGTERM, handle_exit_signal)
     signal.signal(signal.SIGINT, handle_exit_signal)
     signal.signal(signal.SIGUSR1, toggle_recording_handler)
 
     try:
         while True: signal.pause()
-    except KeyboardInterrupt: log_message("KeyboardInterrupt caught.")
+    except: pass
     finally:
         cleanup_resources()
         log_message("Script terminated.")

@@ -11,7 +11,7 @@ This repository contains two Python scripts for real-time voice-to-text transcri
 -   **Clipboard Integration**: Transcribed text is automatically copied to your clipboard using `xclip` (for X11) or `wl-copy` (for Wayland).
 -   **Visual Feedback (Systray version)**: A tray icon indicates whether the script is idle (microphone) or recording (red dot).
 -   **Robust**: Includes PID file management to prevent multiple instances and proper resource cleanup.
--   **Configurable**: Easily change the Gemini model, audio recording parameters, and more directly within the scripts.
+-   **Configurable**: Set your API key, and optionally customize the Gemini model and transcription prompt, via a `.env` file. Audio recording parameters remain configurable within the scripts.
 -   **Retry Logic**: Automatically retries transcription requests to the Gemini API on failure.
 
 ## 1. Requirements
@@ -58,19 +58,24 @@ git clone <repository_url> ~/scripts/gemini-voice
 cd ~/scripts/gemini-voice
 ```
 
-### Step 2.2: Set Your Gemini API Key
+### Step 2.2: Configure Environment Variables
 
 1.  Obtain a Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
-2.  run 
-```bash
-cp .env.example .env 
-```
-   use your editor and then add your api key 
-```bash
-nano .env
-```
+2.  Create a `.env` file by copying the example file:
+    ```bash
+    cp .env.example .env
+    ```
+3.  Open the `.env` file in your editor (e.g., `nano .env`) and configure the variables:
+    -   `GEMINI_API_KEY`: **(Required)** Paste your API key here.
+    -   `GEMINI_MODEL_NAME`: (Optional) The Gemini model to use. Defaults to `gemini-1.5-flash-latest`.
+    -   `GEMINI_PROMPT_TEXT`: (Optional) The prompt sent to the API with the audio. Defaults to `"Transcribe this audio recording."`.
 
-
+    Your `.env` file should look something like this:
+    ```
+    GEMINI_API_KEY="your_actual_api_key_goes_here"
+    GEMINI_MODEL_NAME="gemini-1.5-flash-latest"
+    GEMINI_PROMPT_TEXT="Transcribe this audio recording."
+    ```
 
 
 ### Step 2.3: Make Scripts Executable
@@ -143,7 +148,7 @@ If using the systray version, you should see a microphone icon appear in your sy
 
 To make the script truly useful, you want it to start automatically when you log in.
 
-### Method 1: Using Desktop Environment Autostart (Recommended)
+### Method 1: Using Desktop Environment Autostart (Solid)
 
 This is the most robust method for most desktop environments (GNOME, KDE, XFCE, etc.) as it ensures the script runs correctly within your graphical session.
 
@@ -166,7 +171,7 @@ This is the most robust method for most desktop environments (GNOME, KDE, XFCE, 
 
 This will start the script automatically after you log in.
 
-### Alternative Method: Using tmux
+### Alternative Method: Using tmux (Recommended who like to use terminal)
 
 For those who prefer terminal-based management, you can run the script inside a `tmux` session. This keeps the script running in the background while allowing you to easily attach to the session to view logs.
 

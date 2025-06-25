@@ -142,12 +142,20 @@ def process_audio():
     """Handles transcription and clipboard copying.
     Only deletes audio file on successful transcription and copy.
     """
-    transcribed_text = transcribe_with_gemini(AUDIO_FILE_TMP)
+    transcribed_text = None
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        transcribed_text = transcribe_with_gemini(AUDIO_FILE_TMP)
+        if transcribed_text:
+            break
+        if attempt < max_retries:
+            log_message(f"Error during transcription, retrying ({attempt + 1}/{max_retries})...")
+            time.sleep(1) # Wait a second before retrying
 
     if transcribed_text:
         log_message(f"Transcription received from Gemini: '{transcribed_text}'")
         log_message(f"Copying transcription to clipboard using '{clipboard_command[0]}'...")
-        
+
         copy_env = os.environ.copy()
         # Environment setup is specific to xclip
         if clipboard_command[0] == "xclip":
@@ -170,7 +178,7 @@ def process_audio():
         except subprocess.CalledProcessError as e:
             log_message(f"Error running {clipboard_command[0]}: {e}")
             if e.stderr: log_message(f"{clipboard_command[0]} stderr: {e.stderr.decode(errors='ignore').strip()}")
-        
+
         if copy_successful: # Only delete if transcription AND clipboard copy were successful
             if os.path.exists(AUDIO_FILE_TMP):
                 try:
@@ -179,10 +187,10 @@ def process_audio():
                 except OSError as e:
                     log_message(f"Error removing temporary audio file after successful processing: {e}")
         else:
-            log_message(f"xclip failed. Audio file {AUDIO_FILE_TMP} will be RETAINED for debugging.")
+            log_message(f"Clipboard copy failed. Audio file {AUDIO_FILE_TMP} will be RETAINED for debugging.")
 
     else: # This block executes if transcribed_text is None (i.e., an error occurred during Gemini call)
-        log_message("No transcription received from Gemini or an error occurred during API call.")
+        log_message("No transcription received from Gemini after all retries.")
         log_message(f"Audio file {AUDIO_FILE_TMP} will be RETAINED for debugging.")
         # DO NOT delete AUDIO_FILE_TMP here
 

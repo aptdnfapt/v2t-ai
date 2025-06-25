@@ -94,15 +94,22 @@ def handle_exit_signal(signum, frame):
     log_message(f"Received signal {signum}. Exiting gracefully.")
     sys.exit(0)
 
-# ... (get_audio_mime_type and transcribe_with_gemini functions remain the same) ...
 def get_audio_mime_type(file_path):
     try:
         result = subprocess.run(["file", "--mime-type", "-b", file_path],
                                 capture_output=True, text=True, check=True)
         return result.stdout.strip()
-    except Exception: # Broad catch if file command fails or not present
-        return "audio/wav" # Default
+    except FileNotFoundError:
+        log_message("INFO: 'file' command not found. Defaulting MIME type to 'audio/wav'.")
+        return "audio/wav" # Default if 'file' is not available
+    except subprocess.CalledProcessError as e:
+        log_message(f"Error determining MIME type: {e}. Defaulting to 'audio/wav'.")
+        return "audio/wav" # Default on error
+    except Exception as e:
+        log_message(f"Unexpected error in get_audio_mime_type: {e}. Defaulting to 'audio/wav'.")
+        return "audio/wav"
 
+# --- Transcribe Function (Updated) ---
 def transcribe_with_gemini(audio_file_path):
     if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_API_KEY_HERE":
         log_message("ERROR: GEMINI_API_KEY is not set.")
@@ -110,31 +117,67 @@ def transcribe_with_gemini(audio_file_path):
     if not os.path.exists(audio_file_path):
         log_message(f"Error: Audio file {audio_file_path} not found for Gemini.")
         return None
+
     mime_type = get_audio_mime_type(audio_file_path)
+
     try:
         with open(audio_file_path, "rb") as af:
             base64_audio_data = base64.b64encode(af.read()).decode('utf-8')
-    except Exception as e: log_message(f"Error base64 encoding: {e}"); return None
-    json_payload = {"contents": [{"parts": [{"text": GEMINI_PROMPT_TEXT}, {"inlineData": {"mimeType": mime_type, "data": base64_audio_data}}]}]}
+    except Exception as e:
+        log_message(f"Error reading or base64 encoding audio file: {e}")
+        return None
+
+    json_payload = {
+        "contents": [{"parts": [{"text": GEMINI_PROMPT_TEXT}, {"inlineData": {"mimeType": mime_type, "data": base64_audio_data}}]}]
+    }
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
-    log_message(f"Sending request to Gemini ({GEMINI_MODEL_NAME})... (Timeout: 30s)")
+
+    log_message(f"Sending request to Gemini API ({GEMINI_MODEL_NAME})... (Timeout: 30s)")
     try:
         response = requests.post(api_url, headers=headers, json=json_payload, timeout=30)
         response.raise_for_status()
         response_json = response.json()
-        if ("candidates" in response_json and response_json["candidates"] and
-            "content" in response_json["candidates"][0] and "parts" in response_json["candidates"][0]["content"] and
-            response_json["candidates"][0]["content"]["parts"] and "text" in response_json["candidates"][0]["content"]["parts"][0]):
+        if "candidates" in response_json and \
+           response_json["candidates"] and \
+           "content" in response_json["candidates"][0] and \
+           "parts" in response_json["candidates"][0]["content"] and \
+           response_json["candidates"][0]["content"]["parts"] and \
+           "text" in response_json["candidates"][0]["content"]["parts"][0]:
             return response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-        log_message(f"Unexpected Gemini response structure: {json.dumps(response_json, indent=2)}"); return None
-    except requests.exceptions.Timeout: log_message("Error: Timeout to Gemini."); return None
-    except requests.exceptions.RequestException as e: log_message(f"Error API request: {e}"); return None
-    except Exception as e: log_message(f"Unexpected error in Gemini call: {e}"); return None
+        else:
+            log_message("Error: Could not find transcribed text in Gemini response structure.")
+            log_message(f"Full Gemini Response: {json.dumps(response_json, indent=2)}")
+            return None
+    except requests.exceptions.Timeout:
+        log_message(f"Error: Timeout making API request to Gemini (exceeded 30 seconds).")
+        return None
+    except requests.exceptions.RequestException as e:
+        log_message(f"Error making API request to Gemini: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            log_message(f"Gemini API Response Content: {e.response.text}")
+        return None
+    except json.JSONDecodeError:
+        log_message("Error: Could not decode JSON response from Gemini.")
+        if 'response' in locals() and response is not None: log_message(f"Raw Gemini Response: {response.text}")
+        return None
+    except Exception as e:
+        log_message(f"An unexpected error occurred during Gemini API call: {e}")
+        return None
+# --- End of Updated Transcribe Function ---
 
 
 def process_audio():
-    transcribed_text = transcribe_with_gemini(AUDIO_FILE_TMP)
+    transcribed_text = None
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        transcribed_text = transcribe_with_gemini(AUDIO_FILE_TMP)
+        if transcribed_text:
+            break
+        if attempt < max_retries:
+            log_message(f"Error during transcription, retrying ({attempt + 1}/{max_retries})...")
+            time.sleep(1)
+
     if transcribed_text:
         log_message(f"Gemini: '{transcribed_text}'")
         log_message(f"Copying transcription to clipboard using '{clipboard_command[0]}'...")
@@ -144,20 +187,20 @@ def process_audio():
             if 'DISPLAY' not in copy_env: copy_env['DISPLAY'] = display_var
             x_authority_file_path = os.getenv('XAUTHORITY_FOR_XCLIP', os.path.expanduser("~/.Xauthority"))
             if 'XAUTHORITY' not in copy_env and os.path.exists(x_authority_file_path): copy_env['XAUTHORITY'] = x_authority_file_path
-        
+
         copy_successful = False
         try:
             subprocess.run(clipboard_command, input=transcribed_text.encode('utf-8'), check=True, env=copy_env)
             log_message("Copied to clipboard."); copy_successful = True
         except Exception as e: log_message(f"Error with {clipboard_command[0]}: {e}")
-        
+
         if copy_successful:
             if os.path.exists(AUDIO_FILE_TMP):
                 try: os.remove(AUDIO_FILE_TMP); log_message(f"Removed: {AUDIO_FILE_TMP}")
                 except OSError as e: log_message(f"Error removing temp audio: {e}")
-        else: log_message(f"xclip failed. Audio RETAINED: {AUDIO_FILE_TMP}")
+        else: log_message(f"Clipboard copy failed. Audio RETAINED: {AUDIO_FILE_TMP}")
     else:
-        log_message("No transcription from Gemini or API error.")
+        log_message("No transcription from Gemini or API error after all retries.")
         log_message(f"Audio RETAINED: {AUDIO_FILE_TMP}")
 
 def toggle_recording_handler(signum, frame):
@@ -233,14 +276,18 @@ def main():
         log_message("CRITICAL: GEMINI_API_KEY not set."); sys.exit(1)
     if not all(check_command(cmd) for cmd in ["arecord", clipboard_tool, "yad"]):
         sys.exit(1)
-    
+    check_command("file") # Also check for 'file' command
+
     yad_process = start_yad_notification()
 
     if os.path.exists(PID_FILE): # PID Management
         try:
             with open(PID_FILE, 'r') as f: pid = int(f.read().strip())
             os.kill(pid, 0); log_message(f"Script already running (PID {pid}). Exiting."); sys.exit(1)
-        except: log_message(f"Stale PID file. Removing."); os.remove(PID_FILE)
+        except (OSError, ValueError): # Catch OSError for kill and ValueError for int conversion
+            log_message(f"Stale PID file ({PID_FILE}). Removing.");
+            try: os.remove(PID_FILE)
+            except OSError as e: log_message(f"Could not remove stale PID file: {e}."); sys.exit(1)
     try:
         with open(PID_FILE, 'w') as f: f.write(str(os.getpid()))
     except IOError as e: log_message(f"PID write error: {e}"); sys.exit(1)

@@ -12,6 +12,7 @@ This repository contains two Python scripts for real-time voice-to-text transcri
 -   **Visual Feedback (Systray version)**: A tray icon indicates whether the script is idle (microphone) or recording (red dot).
 -   **Robust**: Includes PID file management to prevent multiple instances and proper resource cleanup.
 -   **Configurable**: Easily change the Gemini model, audio recording parameters, and more directly within the scripts.
+-   **Retry Logic**: Automatically retries transcription requests to the Gemini API on failure.
 
 ## 1. Requirements
 
@@ -125,24 +126,26 @@ Go to your desktop environment's or window manager's keyboard settings and creat
 
 Before setting up the hotkey, decide which script you want to run:
 
--   `voiceai.gemini.yad-systray.py`: **Recommended for most users.** Provides a system tray icon for visual feedback on recording status. Requires `yad` to be installed.
--   `voiceai.gemini.py`: A headless version with no graphical icon. It prints status messages to the terminal or a log file.
+-   `voiceai.gemini.yad-systray.py`: **Recommended for X11 users.** Provides a system tray icon for visual feedback on recording status. Requires `yad` to be installed. **Note:** This script relies on `yad` for the tray icon, which may not work reliably on all **Wayland** setups.
+-   `voiceai.gemini.py`: A headless version with no graphical icon. It prints status messages to the terminal or a log file. **Recommended for Wayland users.**
 
-You must start your chosen script *before* you can use the hotkey. The rest of this guide will assume you are using the `yad-systray` version.
+You must start your chosen script *before* you can use the hotkey. The rest of this guide will assume you are using the `yad-systray` version for X11 or the headless version for Wayland.
 
 To test it, run it from your terminal:
 ```bash
-/path/to/your/script/voiceai.gemini.yad-systray.py
+/path/to/your/script/voiceai.gemini.yad-systray.py # For X11
+# OR
+/path/to/your/script/voiceai.gemini.py # For Wayland
 ```
-You should see a microphone icon appear in your system tray. Now try your hotkey. The icon should turn into a red dot while recording. Press it again to stop, and the transcribed text will be copied to your clipboard.
+If using the systray version, you should see a microphone icon appear in your system tray. Now try your hotkey. The icon should turn into a red dot while recording. Press it again to stop, and the transcribed text will be copied to your clipboard.
 
-## 4. Automatic Startup on Login
+## 4. Running the Script on Startup
 
-### Method 1: Using Desktop Environment Autostart (Recommended for Wayland)
+To make the script truly useful, you want it to start automatically when you log in.
 
-Using `@reboot` with `crontab` can be unreliable on Wayland for applications that need to interact with your graphical session (like `yad` or `wl-copy`). The environment variables (`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`) required for them to work are often not available in the `cron` environment.
+### Method 1: Using Desktop Environment Autostart (Recommended)
 
-A more robust method is to use your desktop environment's autostart settings.
+This is the most robust method for most desktop environments (GNOME, KDE, XFCE, etc.) as it ensures the script runs correctly within your graphical session.
 
 1.  Create a `.desktop` file in `~/.config/autostart/`, for example `voice-input-gemini.desktop`.
 2.  Add the following content, making sure to use the **absolute path** to your script:
@@ -157,35 +160,51 @@ A more robust method is to use your desktop environment's autostart settings.
     Type=Application
     Categories=Utility;
     ```
+    **Note for Wayland users**: The `yad-systray` script may not work correctly. You should change the `Exec` line to point to the headless script: `Exec=/home/your_user/scripts/gemini-voice/voiceai.gemini.py`
+
 3.  Make it executable: `chmod +x ~/.config/autostart/voice-input-gemini.desktop`.
 
-This will start the script correctly within your user session after you log in.
+This will start the script automatically after you log in.
 
-### Method 2: Using `crontab` (For X11 or non-desktop setups)
+### Alternative Method: Using tmux
 
-To make this tool truly useful, you want it to start automatically when you log in. You can achieve this using `crontab`.
+For those who prefer terminal-based management, you can run the script inside a `tmux` session. This keeps the script running in the background while allowing you to easily attach to the session to view logs.
 
-1.  Open your user's crontab for editing:
-    ```bash
-    crontab -e
-    ```
+The following is an example bash script to automate this. You can run this script manually after logging in or add it to your shell's startup file (e.g., `~/.profile` or `~/.bashrc`).
 
-2.  Add the following line to the bottom of the file. **You must replace `/path/to/your/script/` with the actual, absolute path to the script.**
+**Example `start_voice_ai.sh`:**
+```bash
+#!/bin/bash
 
-    ```crontab
-    @reboot export DISPLAY=:0 && /path/to/your/script/voiceai.gemini.yad-systray.py >> /tmp/voice_input_gemini.log 2>&1
-    ```
+# Start a new detached tmux session named "voice"
+tmux new -d -s voice
 
-*(Note: If you chose to use the headless `voiceai.gemini.py` script, change the filename in the command accordingly. The `export DISPLAY=:0` part is only necessary for the `yad-systray` version but does no harm for the headless one.)*
+# (Optional) Set a specific microphone as the default source.
+# This line is an EXAMPLE. Use 'pactl list sources' to find your mic's name.
+# You may need to uncomment and adapt it for your system.
+# pactl set-source-port alsa_input.pci-0000_00_0e.0.analog-stereo analog-input-headset-mic
 
-1.  Open your user's crontab for editing:
-    ```bash
-    crontab -e
-    ```
+# Send the command to start the voice script to the tmux session.
+# - For X11 with tray icon, use the 'yad-systray' script and 'export DISPLAY=:0'.
+# - For Wayland, use the headless 'voiceai.gemini.py' script (no DISPLAY needed).
+#
+# MAKE SURE to use the absolute path to your script.
 
-2.  Add the following line to the bottom of the file. **You must replace `/path/to/your/script/` with the actual, absolute path to the script.**
+# Example for X11:
+tmux send-keys -t voice "export DISPLAY=:0 && python3 /home/user/scripts/voiceai.gemini.yad-systray.py" C-m
 
-    ```crontab
-    @reboot export DISPLAY=:0 && /path/to/your/script/voiceai.gemini.yad-systray.py >> /tmp/voice_input_gemini.log 2>&1
-    ```
+# Example for Wayland (uncomment to use):
+# tmux send-keys -t voice "python3 /home/user/scripts/voiceai.gemini.py" C-m
+```
 
+**How to use this script:**
+
+1.  Save the content above to a file, e.g., `~/start_voice_ai.sh`.
+2.  **Edit the script:**
+    *   Choose the correct `tmux send-keys` command for your session (X11 or Wayland) and comment out the other one.
+    *   Replace the example path (`/home/user/scripts/...`) with the **absolute path** to the script on your machine.
+    *   If needed, customize the `pactl` command for your microphone.
+3.  Make the script executable: `chmod +x ~/start_voice_ai.sh`.
+4.  Run it from your terminal: `~/start_voice_ai.sh`.
+
+The script is now running in the background. You can check its output with `tmux attach -t voice`. To detach from the session (leaving the script running), press `Ctrl+b` then `d`.

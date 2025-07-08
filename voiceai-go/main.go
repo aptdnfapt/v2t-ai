@@ -509,19 +509,22 @@ func (app *AppState) processLargeAudio(wavData []byte, audioSizeMB float64) stri
 		}
 	}
 
+	// Create a temporary directory for audio segments
+	segmentsDir, err := os.MkdirTemp("", "voice_ai_segments_")
+	if err != nil {
+		logMessage(fmt.Sprintf("Failed to create temp directory for segments: %v", err))
+		transcript, _ := app.transcribeAudio(wavData)
+		return transcript
+	}
+	defer os.RemoveAll(segmentsDir) // Cleanup the directory and its contents
+
 	// Split audio by silence (SAME AS PYTHON)
-	segments := app.splitAudioBySilence(processFile)
+	segments := app.splitAudioBySilence(processFile, segmentsDir)
 	if len(segments) == 0 {
 		logMessage("Audio splitting failed, trying direct processing...")
 		transcript, _ := app.transcribeAudio(wavData)
 		return transcript
 	}
-
-	defer func() {
-		for _, segment := range segments {
-			os.Remove(segment)
-		}
-	}()
 
 	logMessage(fmt.Sprintf("Split audio into %d segments", len(segments)))
 	logMessage(fmt.Sprintf("Starting parallel transcription of %d segments...", len(segments)))
@@ -541,30 +544,29 @@ func (app *AppState) speedUpAudio(inputFile, outputFile string) bool {
 	return true
 }
 
-func (app *AppState) splitAudioBySilence(inputFile string) []string {
-	tempDir := "/tmp/voice_ai_segments"
-	os.MkdirAll(tempDir, 0755)
-	defer os.RemoveAll(tempDir)
-	
-	outputPattern := tempDir + "/segment_%03d.wav"
-	
+func (app *AppState) splitAudioBySilence(inputFile string, outputDir string) []string {
+	outputPattern := filepath.Join(outputDir, "segment_%03d.wav")
+
 	cmd := exec.Command("sox", inputFile, outputPattern,
 		"silence", "1", "0.1", app.config.SilenceThreshold,
 		"1", fmt.Sprintf("%.1f", app.config.MinSilenceDuration), app.config.SilenceThreshold,
 		":", "newfile", ":", "restart")
-	
-	if err := cmd.Run(); err != nil {
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		logMessage(fmt.Sprintf("Error splitting audio: %v", err))
+		logMessage(fmt.Sprintf("Sox output: %s", string(output)))
 		return []string{}
 	}
-	
+
 	// Find created segments
-	pattern := tempDir + "/segment_*.wav"
+	pattern := filepath.Join(outputDir, "segment_*.wav")
 	segments, err := filepath.Glob(pattern)
 	if err != nil {
+		logMessage(fmt.Sprintf("Error finding segments with glob: %v", err))
 		return []string{}
 	}
-	
+
 	return segments
 }
 

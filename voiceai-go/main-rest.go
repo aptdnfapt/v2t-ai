@@ -22,30 +22,36 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// GeminiRequest defines the structure for the JSON payload sent to the Gemini REST API.
 type GeminiRequest struct {
 	Contents         []Content         `json:"contents"`
 	GenerationConfig GenerationConfig `json:"generationConfig"`
 }
 
+// Content holds the parts of the request.
 type Content struct {
 	Parts []Part `json:"parts"`
 }
 
+// Part can be either text or inline data (like audio).
 type Part struct {
 	Text       string      `json:"text,omitempty"`
 	InlineData *InlineData `json:"inlineData,omitempty"`
 }
 
+// InlineData represents the raw media data.
 type InlineData struct {
 	MIMEType string `json:"mimeType"`
 	Data     string `json:"data"`
 }
 
+// GenerationConfig specifies the content generation parameters.
 type GenerationConfig struct {
 	Temperature     float64 `json:"temperature"`
 	MaxOutputTokens int     `json:"maxOutputTokens"`
 }
 
+// GeminiResponse defines the structure for the JSON response from the Gemini REST API.
 type GeminiResponse struct {
 	Candidates []struct {
 		Content struct {
@@ -56,6 +62,7 @@ type GeminiResponse struct {
 	} `json:"candidates"`
 }
 
+// Config holds all the application configuration.
 type Config struct {
 	APIKey             string
 	PrimaryModel       string
@@ -74,6 +81,7 @@ type Config struct {
 	ARecordChannels    string
 }
 
+// AppState holds the application's state.
 type AppState struct {
 	config     *Config
 	httpClient *http.Client
@@ -224,12 +232,12 @@ func writePIDFile(pidFile string) error {
 	return os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 }
 
-// Transcription function using REST API with timing
+// Transcription function using REST API
 func (app *AppState) transcribeAudio(audioData []byte) (string, error) {
 	return app.transcribeWithRest(audioData, app.config.PrimaryModel)
 }
 
-// Recording functionality - SAME as Python version
+// Recording functionality
 type RecordingState struct {
 	isRecording  bool
 	isProcessing bool
@@ -414,7 +422,6 @@ func (app *AppState) sendYADCommand(command string) {
 	if app.yadStdin == nil {
 		return
 	}
-
 	// Send command to YAD via stdin pipe
 	_, err := app.yadStdin.Write([]byte(command + "\n"))
 	if err != nil {
@@ -503,19 +510,22 @@ func (app *AppState) processLargeAudio(wavData []byte, audioSizeMB float64) stri
 		}
 	}
 
+	// Create a temporary directory for audio segments
+	segmentsDir, err := os.MkdirTemp("", "voice_ai_segments_")
+	if err != nil {
+		logMessage(fmt.Sprintf("Failed to create temp directory for segments: %v", err))
+		transcript, _ := app.transcribeAudio(wavData)
+		return transcript
+	}
+	defer os.RemoveAll(segmentsDir) // Cleanup the directory and its contents
+
 	// Split audio by silence (SAME AS PYTHON)
-	segments := app.splitAudioBySilence(processFile)
+	segments := app.splitAudioBySilence(processFile, segmentsDir)
 	if len(segments) == 0 {
 		logMessage("Audio splitting failed, trying direct processing...")
 		transcript, _ := app.transcribeAudio(wavData)
 		return transcript
 	}
-
-	defer func() {
-		for _, segment := range segments {
-			os.Remove(segment)
-		}
-	}()
 
 	logMessage(fmt.Sprintf("Split audio into %d segments", len(segments)))
 	logMessage(fmt.Sprintf("Starting parallel transcription of %d segments...", len(segments)))
@@ -535,27 +545,25 @@ func (app *AppState) speedUpAudio(inputFile, outputFile string) bool {
 	return true
 }
 
-func (app *AppState) splitAudioBySilence(inputFile string) []string {
-	tempDir := "/tmp/voice_ai_segments"
-	os.MkdirAll(tempDir, 0755)
-	defer os.RemoveAll(tempDir)
-
-	outputPattern := tempDir + "/segment_%03d.wav"
+func (app *AppState) splitAudioBySilence(inputFile string, outputDir string) []string {
+	outputPattern := filepath.Join(outputDir, "segment_%03d.wav")
 
 	cmd := exec.Command("sox", inputFile, outputPattern,
 		"silence", "1", "0.1", app.config.SilenceThreshold,
 		"1", fmt.Sprintf("%.1f", app.config.MinSilenceDuration), app.config.SilenceThreshold,
 		":", "newfile", ":", "restart")
 
-	if err := cmd.Run(); err != nil {
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		logMessage(fmt.Sprintf("Error splitting audio: %v", err))
+		logMessage(fmt.Sprintf("Sox output: %s", string(output)))
 		return []string{}
 	}
 
-	// Find created segments
-	pattern := tempDir + "/segment_*.wav"
+	pattern := filepath.Join(outputDir, "segment_*.wav")
 	segments, err := filepath.Glob(pattern)
 	if err != nil {
+		logMessage(fmt.Sprintf("Error finding segments with glob: %v", err))
 		return []string{}
 	}
 
@@ -578,8 +586,8 @@ func (app *AppState) transcribeSegmentsParallel(segments []string) string {
 		wg.Add(1)
 		go func(idx int, segmentFile string) {
 			defer wg.Done()
-			semaphore <- struct{}{}        // Acquire
-			defer func() { <-semaphore }() // Release
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
 
 			// Smart model selection (SAME AS PYTHON)
 			var model string
@@ -591,10 +599,9 @@ func (app *AppState) transcribeSegmentsParallel(segments []string) string {
 
 			logMessage(fmt.Sprintf("Transcribing segment %d with %s...", idx+1, model))
 			start := time.Now()
-
 			text, err := app.transcribeSegmentFile(segmentFile, model)
-
 			duration := time.Since(start)
+
 			if err == nil && text != "" {
 				logMessage(fmt.Sprintf("Segment %d completed in %.2fs", idx+1, duration.Seconds()))
 			} else {
@@ -610,7 +617,6 @@ func (app *AppState) transcribeSegmentsParallel(segments []string) string {
 					}
 				}
 			}
-
 			resultChan <- segmentResult{index: idx, text: text, err: err}
 		}(i, segment)
 	}

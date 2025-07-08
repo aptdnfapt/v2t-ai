@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -41,6 +43,7 @@ type AppState struct {
 	ctx      context.Context
 	useYAD   bool
 	yadCmd   *exec.Cmd
+	yadStdin io.WriteCloser
 }
 
 func main() {
@@ -140,15 +143,23 @@ func (app *AppState) startYAD() bool {
 
 	cmd := exec.Command("yad", "--notification",
 		"--image=audio-input-microphone",
-		"--text=Voice Input: Ready",
+		"--text=Voice Input: Idle (Press keybind to record)",
 		"--command=:",
 		"--listen")
+
+	// Get stdin pipe for sending commands
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return false
+	}
 
 	if err := cmd.Start(); err != nil {
 		return false
 	}
 
 	app.yadCmd = cmd
+	app.yadStdin = stdin
+	
 	return true
 }
 
@@ -169,8 +180,11 @@ func getEnv(key, defaultValue string) string {
 func writePIDFile(pidFile string) error {
 	return os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 }
-// Transcription function using correct API
+// Transcription function using correct API with timing
 func (app *AppState) transcribeAudio(audioData []byte) (string, error) {
+	logMessage(fmt.Sprintf("Sending request to Gemini API (%s)...", app.config.PrimaryModel))
+	start := time.Now()
+	
 	parts := []*genai.Part{
 		genai.NewPartFromText(app.config.PromptText), // Use configurable prompt
 		&genai.Part{
@@ -192,10 +206,14 @@ func (app *AppState) transcribeAudio(audioData []byte) (string, error) {
 		nil,
 	)
 	
+	duration := time.Since(start)
+	
 	if err != nil {
+		logMessage(fmt.Sprintf("API request failed after %.2fs: %v", duration.Seconds(), err))
 		return "", err
 	}
 	
+	logMessage(fmt.Sprintf("API response received in %.2fs", duration.Seconds()))
 	return result.Text(), nil
 }
 
@@ -273,27 +291,19 @@ func (app *AppState) startRecording() {
 
 		// Create WAV data (same as Python)
 		wavData := app.createWAVData(audioData)
-
-		// Transcribe using configured prompt
-		transcript, err := app.transcribeAudio(wavData)
-		if err != nil {
-			logMessage(fmt.Sprintf("Transcription failed: %v", err))
-			// Save audio for debugging like Python version
-			app.saveAudioForDebugging(wavData)
-			return
-		}
-
+		
+		// Process with ADVANCED features like Python version
+		transcript := app.processAudioAdvanced(wavData)
+		
 		if transcript != "" {
 			logMessage(fmt.Sprintf("Final transcription: '%s'", transcript))
 			if app.copyToClipboard(transcript) {
-				// Success - clean up
 				app.cleanupTempAudio()
 			} else {
-				// Clipboard failed - save audio
 				app.saveAudioForDebugging(wavData)
 			}
 		} else {
-			logMessage("No transcription received")
+			logMessage("All transcription attempts failed")
 			app.saveAudioForDebugging(wavData)
 		}
 	}()
@@ -386,8 +396,15 @@ func (app *AppState) updateTrayIcon() {
 }
 
 func (app *AppState) sendYADCommand(command string) {
-	// YAD command sending would need stdin pipe management
-	// For now, simplified - full implementation would need proper stdin handling
+	if app.yadStdin == nil {
+		return
+	}
+	
+	// Send command to YAD via stdin pipe
+	_, err := app.yadStdin.Write([]byte(command + "\n"))
+	if err != nil {
+		logMessage(fmt.Sprintf("Failed to send YAD command: %v", err))
+	}
 }
 
 func (app *AppState) saveAudioForDebugging(wavData []byte) {
@@ -427,4 +444,231 @@ func getEnvInt(key string, defaultValue int) int {
 // Logging function with timestamp (like Python version)
 func logMessage(message string) {
 	fmt.Printf("[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), message)
+}
+
+// ADVANCED PROCESSING - Same as Python version
+func (app *AppState) processAudioAdvanced(wavData []byte) string {
+	audioSizeMB := float64(len(wavData)) / (1024 * 1024)
+	logMessage(fmt.Sprintf("Audio size: %.2f MB", audioSizeMB))
+	
+	// Strategy selection based on size (SAME AS PYTHON)
+	if audioSizeMB <= app.config.MaxSegmentSizeMB {
+		// Small audio - direct processing
+		logMessage("Using direct processing for small audio")
+		transcript, _ := app.transcribeAudio(wavData)
+		return transcript
+	} else {
+		// Large audio - advanced processing
+		logMessage(fmt.Sprintf("Large audio detected (%.2f MB). Using advanced processing...", audioSizeMB))
+		return app.processLargeAudio(wavData, audioSizeMB)
+	}
+}
+
+func (app *AppState) processLargeAudio(wavData []byte, audioSizeMB float64) string {
+	// Save to temp file for processing
+	tempFile := app.config.AudioTempFile
+	if err := os.WriteFile(tempFile, wavData, 0644); err != nil {
+		logMessage(fmt.Sprintf("Failed to write temp file: %v", err))
+		return ""
+	}
+	defer os.Remove(tempFile)
+
+	// Apply speed if very large (SAME AS PYTHON)
+	processFile := tempFile
+	if audioSizeMB > app.config.MaxSegmentSizeMB*2 {
+		logMessage(fmt.Sprintf("Very large audio. Applying %.1fx speed...", app.config.SpeedMultiplier))
+		speedFile := tempFile + "_speed.wav"
+		if app.speedUpAudio(tempFile, speedFile) {
+			processFile = speedFile
+			defer os.Remove(speedFile)
+			logMessage("Audio speed increased successfully")
+		} else {
+			logMessage("Speed increase failed, continuing with original")
+		}
+	}
+
+	// Split audio by silence (SAME AS PYTHON)
+	segments := app.splitAudioBySilence(processFile)
+	if len(segments) == 0 {
+		logMessage("Audio splitting failed, trying direct processing...")
+		transcript, _ := app.transcribeAudio(wavData)
+		return transcript
+	}
+
+	defer func() {
+		for _, segment := range segments {
+			os.Remove(segment)
+		}
+	}()
+
+	logMessage(fmt.Sprintf("Split audio into %d segments", len(segments)))
+	logMessage(fmt.Sprintf("Starting parallel transcription of %d segments...", len(segments)))
+
+	// Parallel transcription (SAME AS PYTHON)
+	return app.transcribeSegmentsParallel(segments)
+}
+
+func (app *AppState) speedUpAudio(inputFile, outputFile string) bool {
+	cmd := exec.Command("ffmpeg", "-i", inputFile, "-filter:a", 
+		fmt.Sprintf("atempo=%.1f", app.config.SpeedMultiplier), "-y", outputFile)
+	
+	if err := cmd.Run(); err != nil {
+		logMessage(fmt.Sprintf("Error speeding up audio: %v", err))
+		return false
+	}
+	return true
+}
+
+func (app *AppState) splitAudioBySilence(inputFile string) []string {
+	tempDir := "/tmp/voice_ai_segments"
+	os.MkdirAll(tempDir, 0755)
+	defer os.RemoveAll(tempDir)
+	
+	outputPattern := tempDir + "/segment_%03d.wav"
+	
+	cmd := exec.Command("sox", inputFile, outputPattern,
+		"silence", "1", "0.1", app.config.SilenceThreshold,
+		"1", fmt.Sprintf("%.1f", app.config.MinSilenceDuration), app.config.SilenceThreshold,
+		":", "newfile", ":", "restart")
+	
+	if err := cmd.Run(); err != nil {
+		logMessage(fmt.Sprintf("Error splitting audio: %v", err))
+		return []string{}
+	}
+	
+	// Find created segments
+	pattern := tempDir + "/segment_*.wav"
+	segments, err := filepath.Glob(pattern)
+	if err != nil {
+		return []string{}
+	}
+	
+	return segments
+}
+
+func (app *AppState) transcribeSegmentsParallel(segments []string) string {
+	type segmentResult struct {
+		index int
+		text  string
+		err   error
+	}
+
+	resultChan := make(chan segmentResult, len(segments))
+	semaphore := make(chan struct{}, app.config.MaxWorkers)
+
+	// Start all transcription goroutines
+	var wg sync.WaitGroup
+	for i, segment := range segments {
+		wg.Add(1)
+		go func(idx int, segmentFile string) {
+			defer wg.Done()
+			semaphore <- struct{}{} // Acquire
+			defer func() { <-semaphore }() // Release
+
+			// Smart model selection (SAME AS PYTHON)
+			var model string
+			if idx%2 == 0 {
+				model = app.config.PrimaryModel
+			} else {
+				model = app.config.FallbackModel
+			}
+
+			logMessage(fmt.Sprintf("Transcribing segment %d with %s...", idx+1, model))
+			start := time.Now()
+			
+			text, err := app.transcribeSegmentFile(segmentFile, model)
+			
+			duration := time.Since(start)
+			if err == nil && text != "" {
+				logMessage(fmt.Sprintf("Segment %d completed in %.2fs", idx+1, duration.Seconds()))
+			} else {
+				logMessage(fmt.Sprintf("Segment %d failed: %v", idx+1, err))
+				// Try fallback model on failure (like Python)
+				if model == app.config.PrimaryModel {
+					logMessage(fmt.Sprintf("Retrying segment %d with fallback model...", idx+1))
+					start = time.Now()
+					text, err = app.transcribeSegmentFile(segmentFile, app.config.FallbackModel)
+					duration = time.Since(start)
+					if err == nil && text != "" {
+						logMessage(fmt.Sprintf("Segment %d completed with fallback in %.2fs", idx+1, duration.Seconds()))
+					}
+				}
+			}
+			
+			resultChan <- segmentResult{index: idx, text: text, err: err}
+		}(i, segment)
+	}
+
+	// Close result channel when all goroutines finish
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	results := make(map[int]string)
+	for result := range resultChan {
+		if result.err == nil && result.text != "" {
+			results[result.index] = result.text
+		}
+	}
+
+	// Combine results in order
+	var transcriptParts []string
+	for i := 0; i < len(segments); i++ {
+		if text, exists := results[i]; exists {
+			transcriptParts = append(transcriptParts, text)
+		}
+	}
+
+	if len(transcriptParts) > 0 {
+		combined := strings.Join(transcriptParts, " ")
+		logMessage(fmt.Sprintf("Combined transcription from %d segments", len(transcriptParts)))
+		return combined
+	}
+
+	return ""
+}
+
+func (app *AppState) transcribeSegmentFile(segmentFile, model string) (string, error) {
+	audioData, err := os.ReadFile(segmentFile)
+	if err != nil {
+		return "", err
+	}
+
+	parts := []*genai.Part{
+		genai.NewPartFromText(app.config.PromptText),
+		&genai.Part{
+			InlineData: &genai.Blob{
+				MIMEType: "audio/wav",
+				Data:     audioData,
+			},
+		},
+	}
+	
+	contents := []*genai.Content{
+		genai.NewContentFromParts(parts, genai.RoleUser),
+	}
+
+	result, err := app.client.Models.GenerateContent(
+		app.ctx,
+		model,
+		contents,
+		nil,
+	)
+	
+	if err != nil {
+		// Check for rate limiting (like Python version)
+		if strings.Contains(err.Error(), "429") {
+			logMessage(fmt.Sprintf("Rate limit hit with %s", model))
+		}
+		return "", err
+	}
+	
+	text := result.Text()
+	if text == "" {
+		return "", fmt.Errorf("no text found in response")
+	}
+	
+	return strings.TrimSpace(text), nil
 }

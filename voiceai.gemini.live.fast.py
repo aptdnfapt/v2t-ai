@@ -52,6 +52,7 @@ YAD_NOTIFICATION_COMMAND_CLICK = ":"
 
 # System Configuration
 PID_FILE = "/tmp/voice_input_gemini.pid"
+AUDIO_FILE_TMP = "/tmp/voice_input_audio_fast.wav"
 
 # --- Global State ---
 is_recording = False
@@ -139,13 +140,35 @@ def handle_exit_signal(signum, frame):
 def copy_to_clipboard(text):
     """Copies the given text to the system clipboard."""
     if not text:
-        return
+        return False
     log_message(f"Copying to clipboard using '{clipboard_command[0]}'...")
     try:
         subprocess.run(clipboard_command, input=text.encode('utf-8'), check=True)
         log_message("Copied to clipboard.")
+        return True
     except Exception as e:
         log_message(f"Error with {clipboard_command[0]}: {e}")
+        return False
+
+def save_audio_for_debugging(audio_data, wav_data):
+    """Saves audio data to temp file for debugging when errors occur."""
+    try:
+        with open(AUDIO_FILE_TMP, 'wb') as f:
+            f.write(wav_data)
+        log_message(f"Audio saved for debugging: {AUDIO_FILE_TMP}")
+        return True
+    except Exception as e:
+        log_message(f"Failed to save audio for debugging: {e}")
+        return False
+
+def cleanup_temp_audio():
+    """Removes temporary audio file if it exists."""
+    if os.path.exists(AUDIO_FILE_TMP):
+        try:
+            os.remove(AUDIO_FILE_TMP)
+            log_message(f"Removed: {AUDIO_FILE_TMP}")
+        except OSError as e:
+            log_message(f"Error removing temp audio: {e}")
 
 def create_wav_header(sample_rate, channels, bits_per_sample, data_size):
     """Creates a WAV header for the given parameters."""
@@ -248,9 +271,65 @@ def transcribe_with_gemini_fast(audio_data):
         log_message(f"An unexpected error occurred during Gemini API call: {e}")
         return None
 
+def process_audio_with_protection(audio_data):
+    """
+    Process audio with error protection and audio retention.
+    """
+    transcribed_text = None
+    wav_data = None
+    
+    try:
+        # Create proper WAV file in memory
+        sample_rate = int(ARECORD_RATE)
+        channels = int(ARECORD_CHANNELS)
+        bits_per_sample = 16
+        
+        # Create WAV header
+        wav_header = create_wav_header(sample_rate, channels, bits_per_sample, len(audio_data))
+        
+        # Combine header and data
+        wav_data = wav_header + audio_data
+        
+        # Try transcription with retries
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            transcribed_text = transcribe_with_gemini_fast(audio_data)
+            if transcribed_text:
+                break
+            if attempt < max_retries:
+                log_message(f"Error during transcription, retrying ({attempt + 1}/{max_retries})...")
+                time.sleep(1)
+        
+        if transcribed_text:
+            log_message(f"Gemini: '{transcribed_text}'")
+            
+            # Try to copy to clipboard
+            copy_successful = copy_to_clipboard(transcribed_text)
+            
+            if copy_successful:
+                # Success! Clean up any existing temp audio
+                cleanup_temp_audio()
+            else:
+                # Clipboard failed, save audio for debugging
+                log_message("Clipboard copy failed. Audio RETAINED for debugging.")
+                save_audio_for_debugging(audio_data, wav_data)
+        else:
+            # Transcription failed, save audio for debugging
+            log_message("No transcription from Gemini or API error after all retries.")
+            log_message(f"Audio RETAINED: {AUDIO_FILE_TMP}")
+            save_audio_for_debugging(audio_data, wav_data)
+            
+    except Exception as e:
+        log_message(f"Error in audio processing: {e}")
+        # Save audio for debugging on any error
+        if wav_data:
+            save_audio_for_debugging(audio_data, wav_data)
+        else:
+            log_message("Could not save audio - WAV data not created")
+
 def transcription_loop(audio_stream, result_queue):
     """
-    Fast transcription loop that processes audio data immediately.
+    Fast transcription loop that processes audio data immediately with protection.
     """
     log_message("Fast transcription thread started.")
     try:
@@ -269,13 +348,8 @@ def transcription_loop(audio_stream, result_queue):
         log_message(f"Read {len(audio_data)} bytes of audio data in {len(audio_chunks)} chunks.")
         
         if audio_data:
-            # Fast transcription
-            transcript = transcribe_with_gemini_fast(audio_data)
-            if transcript:
-                log_message(f"Final transcript: '{transcript}'")
-                result_queue.put(transcript)
-            else:
-                log_message("No transcription received from Gemini API.")
+            # Process audio with full protection
+            process_audio_with_protection(audio_data)
         else:
             log_message("No audio data received.")
 
@@ -407,12 +481,14 @@ def main():
     # --- Main Loop ---
     while True:
         try:
-            final_transcript = final_transcript_queue.get(timeout=0.5)
-            copy_to_clipboard(final_transcript)
-            is_processing = False
-            update_tray_icon_state()
-        except queue.Empty:
-            continue
+            # Check if transcription thread is still running
+            if transcription_thread and not transcription_thread.is_alive() and is_processing:
+                # Transcription finished, reset processing state
+                is_processing = False
+                update_tray_icon_state()
+            
+            # Small sleep to prevent busy waiting
+            time.sleep(0.1)
         except KeyboardInterrupt:
             break
 

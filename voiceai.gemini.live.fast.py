@@ -41,16 +41,16 @@ ARECORD_CHANNELS = "1"     # Mono audio
 
 # Gemini API settings
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash")
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-1.5-flash-8b")
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash")
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash-exp")
 GEMINI_PROMPT_TEXT = os.getenv("GEMINI_PROMPT_TEXT", "Transcribe this audio accurately and quickly.")
 GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-1.5-flash-8b")
 
 # Audio processing settings
 MAX_SEGMENT_SIZE_MB = float(os.getenv("MAX_SEGMENT_SIZE_MB", "2.0"))  # Split if larger
 SPEED_MULTIPLIER = float(os.getenv("SPEED_MULTIPLIER", "2.0"))  # For very large files
-SILENCE_THRESHOLD = os.getenv("SILENCE_THRESHOLD", "1%")  # sox silence threshold
-MIN_SILENCE_DURATION = float(os.getenv("MIN_SILENCE_DURATION", "1.0"))  # seconds
+SILENCE_THRESHOLD = os.getenv("SILENCE_THRESHOLD", "5%")  # sox silence threshold (less sensitive)
+MIN_SILENCE_DURATION = float(os.getenv("MIN_SILENCE_DURATION", "3.0"))  # seconds (longer pauses)
 
 # YAD Notification Configuration
 ICON_NAME_IDLE = "audio-input-microphone"
@@ -264,8 +264,30 @@ def split_audio_by_silence(input_file, output_dir):
         log_message(f"Error splitting audio: {e}")
         return []
 
-def transcribe_segment(segment_file, model_name, segment_index):
-    """Transcribe a single audio segment."""
+def transcribe_segment_with_fallback(segment_file, segment_index, use_load_balancing=True):
+    """Transcribe a single audio segment with smart model selection and fallback."""
+    
+    # Smart model selection
+    if use_load_balancing:
+        # Load balance: alternate between models
+        primary_model = GEMINI_MODEL_NAME if segment_index % 2 == 0 else GEMINI_FALLBACK_MODEL
+        fallback_model = GEMINI_FALLBACK_MODEL if segment_index % 2 == 0 else GEMINI_MODEL_NAME
+    else:
+        primary_model = GEMINI_MODEL_NAME
+        fallback_model = GEMINI_FALLBACK_MODEL
+    
+    # Try primary model first
+    result = transcribe_segment_single(segment_file, primary_model, segment_index, "primary")
+    
+    # If primary failed with rate limit, immediately try fallback
+    if result[1] == "" and "429" in str(getattr(transcribe_segment_single, 'last_error', '')):
+        log_message(f"Rate limit hit on segment {segment_index + 1}, trying fallback model...")
+        result = transcribe_segment_single(segment_file, fallback_model, segment_index, "fallback")
+    
+    return result
+
+def transcribe_segment_single(segment_file, model_name, segment_index, model_type=""):
+    """Transcribe a single audio segment with one specific model."""
     try:
         # Read the segment file
         with open(segment_file, 'rb') as f:
@@ -294,7 +316,8 @@ def transcribe_segment(segment_file, model_name, segment_index):
             "Accept": "application/json"
         }
         
-        log_message(f"Transcribing segment {segment_index + 1} with {model_name}...")
+        model_label = f"{model_name} ({model_type})" if model_type else model_name
+        log_message(f"Transcribing segment {segment_index + 1} with {model_label}...")
         start_time = time.time()
         
         with requests.Session() as session:
@@ -313,6 +336,13 @@ def transcribe_segment(segment_file, model_name, segment_index):
             log_message(f"No text found in segment {segment_index + 1} response")
             return (segment_index, "")
             
+    except requests.exceptions.HTTPError as e:
+        if "429" in str(e):
+            log_message(f"Rate limit hit on segment {segment_index + 1} with {model_name}")
+            transcribe_segment_single.last_error = str(e)  # Store error for fallback check
+        else:
+            log_message(f"HTTP error on segment {segment_index + 1}: {e}")
+        return (segment_index, "")
     except Exception as e:
         log_message(f"Error transcribing segment {segment_index + 1}: {e}")
         return (segment_index, "")
@@ -416,9 +446,17 @@ def process_audio_with_advanced_features(audio_data):
         
         # Strategy selection based on size
         if audio_size_mb <= MAX_SEGMENT_SIZE_MB:
-            # Small audio - direct processing
+            # Small audio - direct processing with smart model selection
             log_message("Using direct processing for small audio")
-            transcribed_text = transcribe_with_gemini_fast(audio_data)
+            # Create temp file for small audio processing
+            temp_small_file = os.path.join(tempfile.gettempdir(), "small_audio.wav")
+            with open(temp_small_file, 'wb') as f:
+                f.write(wav_data)
+            try:
+                transcribed_text = transcribe_segment_with_fallback(temp_small_file, 0, use_load_balancing=False)[1]
+            finally:
+                if os.path.exists(temp_small_file):
+                    os.remove(temp_small_file)
             
         else:
             # Large audio - advanced processing
@@ -450,12 +488,12 @@ def process_audio_with_advanced_features(audio_data):
                 # Parallel transcription of segments
                 log_message(f"Starting parallel transcription of {len(segments)} segments...")
                 
-                # Use ThreadPoolExecutor for concurrent API calls
+                # Use ThreadPoolExecutor for concurrent API calls with smart load balancing
                 segment_results = []
-                with ThreadPoolExecutor(max_workers=min(4, len(segments))) as executor:
-                    # Submit all transcription tasks
+                with ThreadPoolExecutor(max_workers=min(3, len(segments))) as executor:
+                    # Submit all transcription tasks with smart model selection
                     future_to_segment = {
-                        executor.submit(transcribe_segment, segment, GEMINI_MODEL_NAME, i): i
+                        executor.submit(transcribe_segment_with_fallback, segment, i): i
                         for i, segment in enumerate(segments)
                     }
                     
@@ -466,19 +504,8 @@ def process_audio_with_advanced_features(audio_data):
                             segment_results.append(result)
                         except Exception as e:
                             segment_index = future_to_segment[future]
-                            log_message(f"Segment {segment_index + 1} failed: {e}")
-                            # Try fallback model
-                            try:
-                                log_message(f"Retrying segment {segment_index + 1} with fallback model...")
-                                fallback_result = transcribe_segment(
-                                    segments[segment_index], 
-                                    GEMINI_FALLBACK_MODEL, 
-                                    segment_index
-                                )
-                                segment_results.append(fallback_result)
-                            except Exception as fallback_error:
-                                log_message(f"Fallback also failed for segment {segment_index + 1}: {fallback_error}")
-                                segment_results.append((segment_index, ""))
+                            log_message(f"Segment {segment_index + 1} completely failed: {e}")
+                            segment_results.append((segment_index, ""))
                 
                 # Sort results by segment index and combine
                 segment_results.sort(key=lambda x: x[0])
@@ -492,8 +519,8 @@ def process_audio_with_advanced_features(audio_data):
             
             else:
                 # Fallback to direct processing if splitting failed
-                log_message("Audio splitting failed, trying direct processing with fallback model...")
-                transcribed_text = transcribe_segment(temp_wav_file, GEMINI_FALLBACK_MODEL, 0)[1]
+                log_message("Audio splitting failed, trying direct processing with smart fallback...")
+                transcribed_text = transcribe_segment_with_fallback(temp_wav_file, 0, use_load_balancing=False)[1]
         
         # Handle results
         if transcribed_text:

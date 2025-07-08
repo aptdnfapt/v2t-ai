@@ -49,9 +49,9 @@ type AppState struct {
 func main() {
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
-		fmt.Println("No .env file found, using environment variables")
+		logMessage("No .env file found, using environment variables")
 	} else {
-		fmt.Println("Loaded configuration from .env file")
+		logMessage("Loaded configuration from .env file")
 	}
 
 	// Check for --no-yad flag
@@ -82,8 +82,12 @@ func main() {
 	}
 
 	if config.APIKey == "" {
-		log.Fatal("GEMINI_API_KEY is required")
+		logMessage("ERROR: GEMINI_API_KEY environment variable not set.")
+		logMessage("Please create a .env file with GEMINI_API_KEY=\"YOUR_API_KEY\"")
+		os.Exit(1)
 	}
+
+	logMessage("Gemini API key configured for ADVANCED FAST processing.")
 
 	// Initialize Gemini client (using the correct API from docs)
 	ctx := context.Background()
@@ -108,17 +112,20 @@ func main() {
 	// Start YAD if enabled
 	if useYAD {
 		if app.startYAD() {
-			fmt.Println("✓ YAD tray icon started")
+			logMessage("Yad notification icon started.")
+			logMessage("Tray icon active.")
 		} else {
-			fmt.Println("⚠ YAD tray icon failed")
+			logMessage("WARNING: Tray icon is INACTIVE.")
 		}
 	} else {
-		fmt.Println("• YAD disabled (headless mode)")
+		logMessage("YAD disabled (headless mode).")
 	}
 
-	fmt.Printf("🚀 Voice AI Go started (PID: %d)\n", os.Getpid())
-	fmt.Printf("Models: %s (primary), %s (fallback)\n", config.PrimaryModel, config.FallbackModel)
-	fmt.Println("Send SIGUSR1 to toggle recording")
+	logMessage(fmt.Sprintf("ADVANCED FAST Voice AI script started (PID %d). Send SIGUSR1 to toggle recording.", os.Getpid()))
+	logMessage("Features: Parallel processing, Audio segmentation, Fallback model, Speed adjustment")
+	logMessage(fmt.Sprintf("Config: Max segment size: %.1fMB, Speed multiplier: %.1fx", app.config.MaxSegmentSizeMB, app.config.SpeedMultiplier))
+	logMessage(fmt.Sprintf("Models: %s (primary), %s (fallback)", config.PrimaryModel, config.FallbackModel))
+	logMessage("Send SIGUSR1 to toggle recording")
 
 	// Setup signal handlers
 	sigChan := make(chan os.Signal, 1)
@@ -129,7 +136,7 @@ func main() {
 		case syscall.SIGUSR1:
 			app.toggleRecording()
 		case syscall.SIGTERM, syscall.SIGINT:
-			fmt.Println("Shutting down...")
+			logMessage(fmt.Sprintf("Received signal %v. Exiting gracefully.", sig))
 			app.cleanup()
 			return
 		}
@@ -137,7 +144,9 @@ func main() {
 }
 
 func (app *AppState) startYAD() bool {
+	logMessage("Starting yad notification icon...")
 	if _, err := exec.LookPath("yad"); err != nil {
+		logMessage("ERROR: Command 'yad' not found. Please install it.")
 		return false
 	}
 
@@ -150,21 +159,25 @@ func (app *AppState) startYAD() bool {
 	// Get stdin pipe for sending commands
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		logMessage(fmt.Sprintf("ERROR: Could not get stdin pipe for yad: %v", err))
 		return false
 	}
 
 	if err := cmd.Start(); err != nil {
+		logMessage(fmt.Sprintf("ERROR: yad failed to start: %v", err))
 		return false
 	}
 
 	app.yadCmd = cmd
 	app.yadStdin = stdin
-	
+
 	return true
 }
 
 func (app *AppState) cleanup() {
+	logMessage("Cleaning up resources...")
 	if app.yadCmd != nil && app.yadCmd.Process != nil {
+		logMessage("Stopping yad notification icon...")
 		app.yadCmd.Process.Kill()
 	}
 	os.Remove(app.config.PIDFile)
@@ -209,6 +222,9 @@ func (app *AppState) transcribeAudio(audioData []byte) (string, error) {
 	duration := time.Since(start)
 	
 	if err != nil {
+		if strings.Contains(err.Error(), "429") {
+			logMessage(fmt.Sprintf("Rate limit hit with %s", app.config.PrimaryModel))
+		}
 		logMessage(fmt.Sprintf("API request failed after %.2fs: %v", duration.Seconds(), err))
 		return "", err
 	}
@@ -348,19 +364,23 @@ func (app *AppState) createWAVData(rawData []byte) []byte {
 func (app *AppState) copyToClipboard(text string) bool {
 	var cmd *exec.Cmd
 	sessionType := strings.ToLower(os.Getenv("XDG_SESSION_TYPE"))
-	
+
+	var cmdName string
 	if strings.Contains(sessionType, "wayland") {
-		cmd = exec.Command("wl-copy")
+		cmdName = "wl-copy"
+		cmd = exec.Command(cmdName)
 	} else {
-		cmd = exec.Command("xclip", "-selection", "clipboard")
+		cmdName = "xclip"
+		cmd = exec.Command(cmdName, "-selection", "clipboard")
 	}
-	
+
+	logMessage(fmt.Sprintf("Copying to clipboard using '%s'...", cmdName))
 	cmd.Stdin = strings.NewReader(text)
 	if err := cmd.Run(); err != nil {
 		logMessage(fmt.Sprintf("Failed to copy to clipboard: %v", err))
 		return false
 	} else {
-		logMessage("Copied to clipboard!")
+		logMessage("Copied to clipboard.")
 		return true
 	}
 }
@@ -416,8 +436,10 @@ func (app *AppState) saveAudioForDebugging(wavData []byte) {
 }
 
 func (app *AppState) cleanupTempAudio() {
-	if err := os.Remove(app.config.AudioTempFile); err == nil {
-		logMessage(fmt.Sprintf("Removed: %s", app.config.AudioTempFile))
+	if _, err := os.Stat(app.config.AudioTempFile); err == nil {
+		if err := os.Remove(app.config.AudioTempFile); err == nil {
+			logMessage(fmt.Sprintf("Removed: %s", app.config.AudioTempFile))
+		}
 	}
 }
 

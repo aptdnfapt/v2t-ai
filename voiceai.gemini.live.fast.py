@@ -249,7 +249,7 @@ def split_audio_by_silence(input_file, output_dir):
         cmd = [
             "sox", input_file, output_pattern,
             "silence", "1", "0.1", SILENCE_THRESHOLD,
-            "1", MIN_SILENCE_DURATION, SILENCE_THRESHOLD,
+            "1", str(MIN_SILENCE_DURATION), SILENCE_THRESHOLD,
             ":", "newfile", ":", "restart"
         ]
         

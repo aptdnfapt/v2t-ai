@@ -32,3 +32,22 @@ jobs:
         path: |
           voiceai-go/voiceai-go
           voiceai-go/main-rest
+
+    - name: Create Release
+      if: github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: latest-${{ github.sha }}
+        name: Latest Build
+        body: |
+          Automated build from commit ${{ github.sha }}
+          
+          **Files:**
+          - `main-rest`: Faster REST API version (recommended)
+          - `voiceai-go`: Native version
+        files: |
+          voiceai-go/main-rest
+          voiceai-go/voiceai-go
+        prerelease: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

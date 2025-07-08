@@ -1,0 +1,34 @@
+name: Go Build
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v3
+      with:
+        go-version: '1.24.4'
+
+    - name: Build main
+      run: |
+        cd voiceai-go
+        go build -v -o voiceai-go main.go
+        
+    - name: Build main-rest
+      run: |
+        cd voiceai-go
+        go build -v -o main-rest main-rest.go
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: go-binaries
+        path: |
+          voiceai-go/voiceai-go
+          voiceai-go/main-rest

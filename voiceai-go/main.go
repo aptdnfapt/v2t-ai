@@ -26,9 +26,6 @@ type Config struct {
 	PromptText          string
 	MaxSegmentSizeMB    float64
 	SpeedMultiplier     float64
-	SilenceThreshold    string
-	MinSilenceDuration  float64
-	MaxWorkers          int
 	PIDFile             string
 	AudioTempFile       string
 	ARecordDevice       string
@@ -70,9 +67,6 @@ func main() {
 		PromptText:          getEnv("GEMINI_PROMPT_TEXT", "Transcribe this audio recording."),
 		MaxSegmentSizeMB:    getEnvFloat("MAX_SEGMENT_SIZE_MB", 2.0),
 		SpeedMultiplier:     getEnvFloat("SPEED_MULTIPLIER", 2.0),
-		SilenceThreshold:    getEnv("SILENCE_THRESHOLD", "5%"),
-		MinSilenceDuration:  getEnvFloat("MIN_SILENCE_DURATION", 3.0),
-		MaxWorkers:          getEnvInt("MAX_WORKERS", 3),
 		PIDFile:             "/tmp/voice_input_gemini.pid",
 		AudioTempFile:       "/tmp/voice_input_audio_go.wav",
 		ARecordDevice:       getEnv("ARECORD_DEVICE", "default"),
@@ -495,7 +489,7 @@ func (app *AppState) processLargeAudio(wavData []byte, audioSizeMB float64) stri
 	}
 	defer os.Remove(tempFile)
 
-	// Apply speed if very large (SAME AS PYTHON)
+	// Apply speed if very large
 	processFile := tempFile
 	if audioSizeMB > app.config.MaxSegmentSizeMB*2 {
 		logMessage(fmt.Sprintf("Very large audio. Applying %.1fx speed...", app.config.SpeedMultiplier))
@@ -509,190 +503,30 @@ func (app *AppState) processLargeAudio(wavData []byte, audioSizeMB float64) stri
 		}
 	}
 
-	// Create a temporary directory for audio segments
-	segmentsDir, err := os.MkdirTemp("", "voice_ai_segments_")
+	// Read the file that will be processed (original or sped up)
+	audioToProcess, err := os.ReadFile(processFile)
 	if err != nil {
-		logMessage(fmt.Sprintf("Failed to create temp directory for segments: %v", err))
-		transcript, _ := app.transcribeAudio(wavData)
-		return transcript
-	}
-	defer os.RemoveAll(segmentsDir) // Cleanup the directory and its contents
-
-	// Split audio by silence (SAME AS PYTHON)
-	segments := app.splitAudioBySilence(processFile, segmentsDir)
-	if len(segments) == 0 {
-		logMessage("Audio splitting failed, trying direct processing...")
-		transcript, _ := app.transcribeAudio(wavData)
-		return transcript
+		logMessage(fmt.Sprintf("Failed to read audio file for transcription: %v", err))
+		// Fallback to original in-memory data if read fails
+		audioToProcess = wavData
 	}
 
-	logMessage(fmt.Sprintf("Split audio into %d segments", len(segments)))
-	logMessage(fmt.Sprintf("Starting parallel transcription of %d segments...", len(segments)))
-
-	// Parallel transcription (SAME AS PYTHON)
-	return app.transcribeSegmentsParallel(segments)
+	logMessage("Processing large audio directly...")
+	transcript, err := app.transcribeAudio(audioToProcess)
+	if err != nil {
+		logMessage(fmt.Sprintf("Transcription of large audio failed: %v", err))
+		return ""
+	}
+	return transcript
 }
 
 func (app *AppState) speedUpAudio(inputFile, outputFile string) bool {
-	cmd := exec.Command("ffmpeg", "-i", inputFile, "-filter:a", 
+	cmd := exec.Command("ffmpeg", "-i", inputFile, "-filter:a",
 		fmt.Sprintf("atempo=%.1f", app.config.SpeedMultiplier), "-y", outputFile)
-	
+
 	if err := cmd.Run(); err != nil {
 		logMessage(fmt.Sprintf("Error speeding up audio: %v", err))
 		return false
 	}
 	return true
-}
-
-func (app *AppState) splitAudioBySilence(inputFile string, outputDir string) []string {
-	outputPattern := filepath.Join(outputDir, "segment_%03d.wav")
-
-	cmd := exec.Command("sox", inputFile, outputPattern,
-		"silence", "1", "0.1", app.config.SilenceThreshold,
-		"1", fmt.Sprintf("%.1f", app.config.MinSilenceDuration), app.config.SilenceThreshold,
-		":", "newfile", ":", "restart")
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		logMessage(fmt.Sprintf("Error splitting audio: %v", err))
-		logMessage(fmt.Sprintf("Sox output: %s", string(output)))
-		return []string{}
-	}
-
-	// Find created segments
-	pattern := filepath.Join(outputDir, "segment_*.wav")
-	segments, err := filepath.Glob(pattern)
-	if err != nil {
-		logMessage(fmt.Sprintf("Error finding segments with glob: %v", err))
-		return []string{}
-	}
-
-	return segments
-}
-
-func (app *AppState) transcribeSegmentsParallel(segments []string) string {
-	type segmentResult struct {
-		index int
-		text  string
-		err   error
-	}
-
-	resultChan := make(chan segmentResult, len(segments))
-	semaphore := make(chan struct{}, app.config.MaxWorkers)
-
-	// Start all transcription goroutines
-	var wg sync.WaitGroup
-	for i, segment := range segments {
-		wg.Add(1)
-		go func(idx int, segmentFile string) {
-			defer wg.Done()
-			semaphore <- struct{}{} // Acquire
-			defer func() { <-semaphore }() // Release
-
-			// Smart model selection (SAME AS PYTHON)
-			var model string
-			if idx%2 == 0 {
-				model = app.config.PrimaryModel
-			} else {
-				model = app.config.FallbackModel
-			}
-
-			logMessage(fmt.Sprintf("Transcribing segment %d with %s...", idx+1, model))
-			start := time.Now()
-			
-			text, err := app.transcribeSegmentFile(segmentFile, model)
-			
-			duration := time.Since(start)
-			if err == nil && text != "" {
-				logMessage(fmt.Sprintf("Segment %d completed in %.2fs", idx+1, duration.Seconds()))
-			} else {
-				logMessage(fmt.Sprintf("Segment %d failed: %v", idx+1, err))
-				// Try fallback model on failure (like Python)
-				if model == app.config.PrimaryModel {
-					logMessage(fmt.Sprintf("Retrying segment %d with fallback model...", idx+1))
-					start = time.Now()
-					text, err = app.transcribeSegmentFile(segmentFile, app.config.FallbackModel)
-					duration = time.Since(start)
-					if err == nil && text != "" {
-						logMessage(fmt.Sprintf("Segment %d completed with fallback in %.2fs", idx+1, duration.Seconds()))
-					}
-				}
-			}
-			
-			resultChan <- segmentResult{index: idx, text: text, err: err}
-		}(i, segment)
-	}
-
-	// Close result channel when all goroutines finish
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// Collect results
-	results := make(map[int]string)
-	for result := range resultChan {
-		if result.err == nil && result.text != "" {
-			results[result.index] = result.text
-		}
-	}
-
-	// Combine results in order
-	var transcriptParts []string
-	for i := 0; i < len(segments); i++ {
-		if text, exists := results[i]; exists {
-			transcriptParts = append(transcriptParts, text)
-		}
-	}
-
-	if len(transcriptParts) > 0 {
-		combined := strings.Join(transcriptParts, " ")
-		logMessage(fmt.Sprintf("Combined transcription from %d segments", len(transcriptParts)))
-		return combined
-	}
-
-	return ""
-}
-
-func (app *AppState) transcribeSegmentFile(segmentFile, model string) (string, error) {
-	audioData, err := os.ReadFile(segmentFile)
-	if err != nil {
-		return "", err
-	}
-
-	parts := []*genai.Part{
-		genai.NewPartFromText(app.config.PromptText),
-		&genai.Part{
-			InlineData: &genai.Blob{
-				MIMEType: "audio/wav",
-				Data:     audioData,
-			},
-		},
-	}
-	
-	contents := []*genai.Content{
-		genai.NewContentFromParts(parts, genai.RoleUser),
-	}
-
-	result, err := app.client.Models.GenerateContent(
-		app.ctx,
-		model,
-		contents,
-		nil,
-	)
-	
-	if err != nil {
-		// Check for rate limiting (like Python version)
-		if strings.Contains(err.Error(), "429") {
-			logMessage(fmt.Sprintf("Rate limit hit with %s", model))
-		}
-		return "", err
-	}
-	
-	text := result.Text()
-	if text == "" {
-		return "", fmt.Errorf("no text found in response")
-	}
-	
-	return strings.TrimSpace(text), nil
 }

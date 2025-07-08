@@ -16,8 +16,6 @@ from dotenv import load_dotenv
 import io
 import wave
 import tempfile
-import glob
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- Introduction ---
 # This script implements an ultra-fast voice-to-text transcription service using optimized Gemini REST API calls.
@@ -49,8 +47,6 @@ GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-1.5-flash-8b"
 # Audio processing settings
 MAX_SEGMENT_SIZE_MB = float(os.getenv("MAX_SEGMENT_SIZE_MB", "2.0"))  # Split if larger
 SPEED_MULTIPLIER = float(os.getenv("SPEED_MULTIPLIER", "2.0"))  # For very large files
-SILENCE_THRESHOLD = os.getenv("SILENCE_THRESHOLD", "5%")  # sox silence threshold (less sensitive)
-MIN_SILENCE_DURATION = float(os.getenv("MIN_SILENCE_DURATION", "3.0"))  # seconds (longer pauses)
 
 # YAD Notification Configuration
 ICON_NAME_IDLE = "audio-input-microphone"
@@ -207,20 +203,6 @@ def create_wav_header(sample_rate, channels, bits_per_sample, data_size):
     
     return bytes(header)
 
-def check_audio_tools():
-    """Check if required audio processing tools are available."""
-    tools_needed = []
-    if not check_command("sox"):
-        tools_needed.append("sox")
-    if not check_command("ffmpeg"):
-        tools_needed.append("ffmpeg")
-    
-    if tools_needed:
-        log_message(f"WARNING: Missing audio tools: {', '.join(tools_needed)}")
-        log_message("Install with: sudo apt install sox ffmpeg")
-        return False
-    return True
-
 def get_audio_size_mb(audio_data):
     """Get audio size in MB."""
     return len(audio_data) / (1024 * 1024)
@@ -238,63 +220,11 @@ def speed_up_audio(input_file, output_file, speed_factor=2.0):
         log_message(f"Error speeding up audio: {e}")
         return False
 
-def split_audio_by_silence(input_file, output_dir):
-    """Split audio by silence using sox."""
+def _transcribe_single_wav(wav_data, model_name):
+    """Transcribe a single WAV data byte array with one specific model."""
     try:
-        # Create output directory
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Use sox to split by silence
-        output_pattern = os.path.join(output_dir, "segment_%03d.wav")
-        cmd = [
-            "sox", input_file, output_pattern,
-            "silence", "1", "0.1", SILENCE_THRESHOLD,
-            "1", str(MIN_SILENCE_DURATION), SILENCE_THRESHOLD,
-            ":", "newfile", ":", "restart"
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        
-        # Get list of created segments
-        segments = sorted(glob.glob(os.path.join(output_dir, "segment_*.wav")))
-        log_message(f"Split audio into {len(segments)} segments")
-        return segments
-        
-    except subprocess.CalledProcessError as e:
-        log_message(f"Error splitting audio: {e}")
-        return []
-
-def transcribe_segment_with_fallback(segment_file, segment_index, use_load_balancing=True):
-    """Transcribe a single audio segment with smart model selection and fallback."""
-    
-    # Smart model selection
-    if use_load_balancing:
-        # Load balance: alternate between models
-        primary_model = GEMINI_MODEL_NAME if segment_index % 2 == 0 else GEMINI_FALLBACK_MODEL
-        fallback_model = GEMINI_FALLBACK_MODEL if segment_index % 2 == 0 else GEMINI_MODEL_NAME
-    else:
-        primary_model = GEMINI_MODEL_NAME
-        fallback_model = GEMINI_FALLBACK_MODEL
-    
-    # Try primary model first
-    result = transcribe_segment_single(segment_file, primary_model, segment_index, "primary")
-    
-    # If primary failed with rate limit, immediately try fallback
-    if result[1] == "" and "429" in str(getattr(transcribe_segment_single, 'last_error', '')):
-        log_message(f"Rate limit hit on segment {segment_index + 1}, trying fallback model...")
-        result = transcribe_segment_single(segment_file, fallback_model, segment_index, "fallback")
-    
-    return result
-
-def transcribe_segment_single(segment_file, model_name, segment_index, model_type=""):
-    """Transcribe a single audio segment with one specific model."""
-    try:
-        # Read the segment file
-        with open(segment_file, 'rb') as f:
-            audio_data = f.read()
-        
         # Base64 encode
-        base64_audio_data = base64.b64encode(audio_data).decode('utf-8')
+        base64_audio_data = base64.b64encode(wav_data).decode('utf-8')
         
         # Create API payload
         json_payload = {
@@ -316,115 +246,48 @@ def transcribe_segment_single(segment_file, model_name, segment_index, model_typ
             "Accept": "application/json"
         }
         
-        model_label = f"{model_name} ({model_type})" if model_type else model_name
-        log_message(f"Transcribing segment {segment_index + 1} with {model_label}...")
+        log_message(f"Transcribing with {model_name}...")
         start_time = time.time()
         
-        with requests.Session() as session:
-            response = session.post(api_url, headers=headers, json=json_payload, timeout=15)
-            response.raise_for_status()
-        
-        api_time = time.time() - start_time
-        log_message(f"Segment {segment_index + 1} completed in {api_time:.2f}s")
-        
-        response_json = response.json()
-        
-        try:
-            text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-            return (segment_index, text)
-        except (KeyError, IndexError, TypeError):
-            log_message(f"No text found in segment {segment_index + 1} response")
-            return (segment_index, "")
-            
-    except requests.exceptions.HTTPError as e:
-        if "429" in str(e):
-            log_message(f"Rate limit hit on segment {segment_index + 1} with {model_name}")
-            transcribe_segment_single.last_error = str(e)  # Store error for fallback check
-        else:
-            log_message(f"HTTP error on segment {segment_index + 1}: {e}")
-        return (segment_index, "")
-    except Exception as e:
-        log_message(f"Error transcribing segment {segment_index + 1}: {e}")
-        return (segment_index, "")
-
-def transcribe_with_gemini_fast(audio_data):
-    """
-    Ultra-fast transcription using optimized Gemini REST API calls.
-    """
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_API_KEY_HERE":
-        log_message("ERROR: GEMINI_API_KEY is not set.")
-        return None
-
-    try:
-        # Create proper WAV file in memory
-        sample_rate = int(ARECORD_RATE)
-        channels = int(ARECORD_CHANNELS)
-        bits_per_sample = 16
-        
-        # Create WAV header
-        wav_header = create_wav_header(sample_rate, channels, bits_per_sample, len(audio_data))
-        
-        # Combine header and data
-        wav_data = wav_header + audio_data
-        
-        # Base64 encode the complete WAV file
-        base64_audio_data = base64.b64encode(wav_data).decode('utf-8')
-        
-        # Optimized JSON payload
-        json_payload = {
-            "contents": [{
-                "parts": [
-                    {"text": GEMINI_PROMPT_TEXT},
-                    {"inlineData": {"mimeType": "audio/wav", "data": base64_audio_data}}
-                ]
-            }],
-            "generationConfig": {
-                "temperature": 0.1,  # Lower temperature for more consistent transcription
-                "maxOutputTokens": 1000
-            }
-        }
-        
-        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-
-        log_message(f"Sending optimized request to Gemini API ({GEMINI_MODEL_NAME})...")
-        start_time = time.time()
-        
-        # Use session for connection reuse
         with requests.Session() as session:
             response = session.post(api_url, headers=headers, json=json_payload, timeout=20)
             response.raise_for_status()
-            
+        
         api_time = time.time() - start_time
-        log_message(f"API response received in {api_time:.2f}s")
+        log_message(f"Completed in {api_time:.2f}s")
         
         response_json = response.json()
         
-        # Fast response parsing
         try:
             text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
             return text
         except (KeyError, IndexError, TypeError):
-            log_message("Error: Could not find transcribed text in Gemini response structure.")
-            log_message(f"Response keys: {list(response_json.keys())}")
+            log_message(f"No text found in response from {model_name}")
             return None
             
-    except requests.exceptions.Timeout:
-        log_message(f"Error: Timeout making API request to Gemini (exceeded 20 seconds).")
-        return None
-    except requests.exceptions.RequestException as e:
-        log_message(f"Error making API request to Gemini: {e}")
+    except requests.exceptions.HTTPError as e:
+        log_message(f"HTTP error with {model_name}: {e}")
         return None
     except Exception as e:
-        log_message(f"An unexpected error occurred during Gemini API call: {e}")
+        log_message(f"Error transcribing with {model_name}: {e}")
         return None
+
+def transcribe_wav_data(wav_data, use_fallback=True):
+    """Transcribe a WAV data byte array with primary and optional fallback model."""
+    
+    # Try primary model first
+    text = _transcribe_single_wav(wav_data, GEMINI_MODEL_NAME)
+    
+    # If primary failed and fallback is enabled
+    if text is None and use_fallback:
+        log_message(f"Primary model failed, trying fallback model...")
+        text = _transcribe_single_wav(wav_data, GEMINI_FALLBACK_MODEL)
+        
+    return text
 
 def process_audio_with_advanced_features(audio_data):
     """
-    Advanced audio processing with segmentation, threading, and fallback protection.
+    Advanced audio processing with fallback protection.
     """
     transcribed_text = None
     wav_data = None
@@ -444,23 +307,11 @@ def process_audio_with_advanced_features(audio_data):
         audio_size_mb = get_audio_size_mb(wav_data)
         log_message(f"Audio size: {audio_size_mb:.2f} MB")
         
-        # Strategy selection based on size
-        if audio_size_mb <= MAX_SEGMENT_SIZE_MB:
-            # Small audio - direct processing with smart model selection
-            log_message("Using direct processing for small audio")
-            # Create temp file for small audio processing
-            temp_small_file = os.path.join(tempfile.gettempdir(), "small_audio.wav")
-            with open(temp_small_file, 'wb') as f:
-                f.write(wav_data)
-            try:
-                transcribed_text = transcribe_segment_with_fallback(temp_small_file, 0, use_load_balancing=False)[1]
-            finally:
-                if os.path.exists(temp_small_file):
-                    os.remove(temp_small_file)
-            
-        else:
-            # Large audio - advanced processing
-            log_message(f"Large audio detected ({audio_size_mb:.2f} MB). Using advanced processing...")
+        audio_to_process = wav_data
+        
+        # If audio is large, we may speed it up
+        if audio_size_mb > MAX_SEGMENT_SIZE_MB:
+            log_message(f"Large audio detected ({audio_size_mb:.2f} MB).")
             
             # Create temporary directory for processing
             temp_dir = tempfile.mkdtemp(prefix="voice_ai_")
@@ -470,91 +321,52 @@ def process_audio_with_advanced_features(audio_data):
             with open(temp_wav_file, 'wb') as f:
                 f.write(wav_data)
             
+            process_file = temp_wav_file
             # Check if we need to speed up audio
             if audio_size_mb > MAX_SEGMENT_SIZE_MB * 2:
                 log_message(f"Very large audio. Applying {SPEED_MULTIPLIER}x speed...")
                 speed_file = os.path.join(temp_dir, "speed.wav")
                 if speed_up_audio(temp_wav_file, speed_file, SPEED_MULTIPLIER):
-                    temp_wav_file = speed_file
+                    process_file = speed_file
                     log_message("Audio speed increased successfully")
                 else:
                     log_message("Speed increase failed, continuing with original")
             
-            # Split audio by silence
-            segments_dir = os.path.join(temp_dir, "segments")
-            segments = split_audio_by_silence(temp_wav_file, segments_dir)
-            
-            if segments:
-                # Parallel transcription of segments
-                log_message(f"Starting parallel transcription of {len(segments)} segments...")
-                
-                # Use ThreadPoolExecutor for concurrent API calls with smart load balancing
-                segment_results = []
-                with ThreadPoolExecutor(max_workers=min(3, len(segments))) as executor:
-                    # Submit all transcription tasks with smart model selection
-                    future_to_segment = {
-                        executor.submit(transcribe_segment_with_fallback, segment, i): i
-                        for i, segment in enumerate(segments)
-                    }
-                    
-                    # Collect results as they complete
-                    for future in as_completed(future_to_segment):
-                        try:
-                            result = future.result()
-                            segment_results.append(result)
-                        except Exception as e:
-                            segment_index = future_to_segment[future]
-                            log_message(f"Segment {segment_index + 1} completely failed: {e}")
-                            segment_results.append((segment_index, ""))
-                
-                # Sort results by segment index and combine
-                segment_results.sort(key=lambda x: x[0])
-                transcribed_parts = [result[1] for result in segment_results if result[1]]
-                
-                if transcribed_parts:
-                    transcribed_text = " ".join(transcribed_parts).strip()
-                    log_message(f"Combined transcription from {len(transcribed_parts)} segments")
-                else:
-                    log_message("No successful transcriptions from any segment")
-            
-            else:
-                # Fallback to direct processing if splitting failed
-                log_message("Audio splitting failed, trying direct processing with smart fallback...")
-                transcribed_text = transcribe_segment_with_fallback(temp_wav_file, 0, use_load_balancing=False)[1]
-        
+            # Read the processed file back into memory
+            with open(process_file, 'rb') as f:
+                audio_to_process = f.read()
+
+        # Now, transcribe the audio_to_process
+        log_message("Processing audio directly...")
+        transcribed_text = transcribe_wav_data(audio_to_process)
+
         # Handle results
         if transcribed_text:
             log_message(f"Final transcription: '{transcribed_text}'")
             
-            # Try to copy to clipboard
             copy_successful = copy_to_clipboard(transcribed_text)
             
             if copy_successful:
-                # Success! Clean up temp files
                 cleanup_temp_audio()
                 if temp_dir and os.path.exists(temp_dir):
                     shutil.rmtree(temp_dir)
                     log_message("Cleaned up temporary files")
             else:
-                # Clipboard failed, save audio for debugging
                 log_message("Clipboard copy failed. Audio RETAINED for debugging.")
                 save_audio_for_debugging(audio_data, wav_data)
         else:
-            # Transcription failed completely
             log_message("All transcription attempts failed.")
             log_message(f"Audio RETAINED: {AUDIO_FILE_TMP}")
             save_audio_for_debugging(audio_data, wav_data)
             
     except Exception as e:
         log_message(f"Error in advanced audio processing: {e}")
-        # Save audio for debugging on any error
         if wav_data:
             save_audio_for_debugging(audio_data, wav_data)
         else:
             log_message("Could not save audio - WAV data not created")
     
     finally:
-        # Clean up temporary directory
         if temp_dir and os.path.exists(temp_dir):
             try:
                 shutil.rmtree(temp_dir)
@@ -671,10 +483,9 @@ def main():
 
     log_message("Gemini API key configured for ADVANCED FAST processing.")
 
-    # Check audio processing tools
-    if not check_audio_tools():
-        log_message("WARNING: Advanced features disabled. Install sox and ffmpeg for best performance.")
-        log_message("Falling back to basic processing mode.")
+    # Check for ffmpeg
+    if not check_command("ffmpeg"):
+        log_message("WARNING: ffmpeg not found. Speed-up for large audio files will be disabled.")
 
     session_type = os.getenv("XDG_SESSION_TYPE", "x11").lower()
     clipboard_tool = "wl-copy" if "wayland" in session_type else "xclip"
@@ -716,7 +527,7 @@ def main():
         log_message("WARNING: Tray icon is INACTIVE.")
 
     log_message(f"ADVANCED FAST Voice AI script started (PID {os.getpid()}). Send SIGUSR1 to toggle recording.")
-    log_message(f"Features: Parallel processing, Audio segmentation, Fallback model, Speed adjustment")
+    log_message(f"Features: Fallback model, Speed adjustment")
     log_message(f"Config: Max segment size: {MAX_SEGMENT_SIZE_MB}MB, Speed multiplier: {SPEED_MULTIPLIER}x")
 
     # --- Main Loop ---

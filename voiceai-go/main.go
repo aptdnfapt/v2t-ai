@@ -61,7 +61,7 @@ func main() {
 	config := &Config{
 		APIKey:              getEnv("GEMINI_API_KEY", ""),
 		PrimaryModel:        getEnv("GEMINI_MODEL_NAME", "gemini-2.5-flash"),
-		FallbackModel:       getEnv("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash-exp"),
+		FallbackModel:       getEnv("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash"),
 		PromptText:          getEnv("GEMINI_PROMPT_TEXT", "Transcribe this audio recording."),
 		MaxSegmentSizeMB:    getEnvFloat("MAX_SEGMENT_SIZE_MB", 2.0),
 		SpeedMultiplier:     getEnvFloat("SPEED_MULTIPLIER", 2.0),
@@ -185,9 +185,28 @@ func getEnv(key, defaultValue string) string {
 func writePIDFile(pidFile string) error {
 	return os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 }
-// Transcription function using correct API with timing
+// Transcription function using correct API with timing and fallback
 func (app *AppState) transcribeAudio(audioData []byte) (string, error) {
-	logMessage(fmt.Sprintf("Sending request to Gemini API (%s)...", app.config.PrimaryModel))
+	// Try primary model first
+	text, err := app.transcribeWithModel(audioData, app.config.PrimaryModel)
+	if err == nil && text != "" {
+		return text, nil
+	}
+	
+	// If primary failed, try fallback model
+	logMessage(fmt.Sprintf("Primary model (%s) failed, trying fallback model (%s)...", app.config.PrimaryModel, app.config.FallbackModel))
+	text, err = app.transcribeWithModel(audioData, app.config.FallbackModel)
+	if err == nil && text != "" {
+		return text, nil
+	}
+	
+	logMessage("Both primary and fallback models failed")
+	return "", fmt.Errorf("all transcription attempts failed")
+}
+
+// Helper function to transcribe with a specific model
+func (app *AppState) transcribeWithModel(audioData []byte, modelName string) (string, error) {
+	logMessage(fmt.Sprintf("Sending request to Gemini API (%s)...", modelName))
 	start := time.Now()
 	
 	parts := []*genai.Part{
@@ -206,7 +225,7 @@ func (app *AppState) transcribeAudio(audioData []byte) (string, error) {
 
 	result, err := app.client.Models.GenerateContent(
 		app.ctx,
-		app.config.PrimaryModel,
+		modelName,
 		contents,
 		nil,
 	)
@@ -215,14 +234,18 @@ func (app *AppState) transcribeAudio(audioData []byte) (string, error) {
 	
 	if err != nil {
 		if strings.Contains(err.Error(), "429") {
-			logMessage(fmt.Sprintf("Rate limit hit with %s", app.config.PrimaryModel))
+			logMessage(fmt.Sprintf("Rate limit hit with %s", modelName))
 		}
 		logMessage(fmt.Sprintf("API request failed after %.2fs: %v", duration.Seconds(), err))
 		return "", err
 	}
 	
 	logMessage(fmt.Sprintf("API response received in %.2fs", duration.Seconds()))
-	return result.Text(), nil
+	text := result.Text()
+	if text == "" {
+		return "", fmt.Errorf("no text found in response from %s", modelName)
+	}
+	return text, nil
 }
 
 

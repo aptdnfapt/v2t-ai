@@ -106,7 +106,7 @@ func main() {
 	config := &Config{
 		APIKey:             getEnv("GEMINI_API_KEY", ""),
 		PrimaryModel:       getEnv("GEMINI_MODEL_NAME", "gemini-2.5-flash"),
-		FallbackModel:      getEnv("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash-exp"),
+		FallbackModel:      getEnv("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash"),
 		PromptText:         getEnv("GEMINI_PROMPT_TEXT", "Transcribe this audio recording."),
 		MaxSegmentSizeMB:   getEnvFloat("MAX_SEGMENT_SIZE_MB", 2.0),
 		SpeedMultiplier:    getEnvFloat("SPEED_MULTIPLIER", 2.0),
@@ -224,9 +224,23 @@ func writePIDFile(pidFile string) error {
 	return os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 }
 
-// Transcription function using REST API
+// Transcription function using REST API with fallback
 func (app *AppState) transcribeAudio(audioData []byte) (string, error) {
-	return app.transcribeWithRest(audioData, app.config.PrimaryModel)
+	// Try primary model first
+	text, err := app.transcribeWithRest(audioData, app.config.PrimaryModel)
+	if err == nil && text != "" {
+		return text, nil
+	}
+	
+	// If primary failed, try fallback model
+	logMessage(fmt.Sprintf("Primary model (%s) failed, trying fallback model (%s)...", app.config.PrimaryModel, app.config.FallbackModel))
+	text, err = app.transcribeWithRest(audioData, app.config.FallbackModel)
+	if err == nil && text != "" {
+		return text, nil
+	}
+	
+	logMessage("Both primary and fallback models failed")
+	return "", fmt.Errorf("all transcription attempts failed")
 }
 
 // Recording functionality
@@ -597,16 +611,27 @@ func (app *AppState) transcribeWithRest(audioData []byte, model string) (string,
 
 	var geminiResp GeminiResponse
 	if err := json.Unmarshal(body, &geminiResp); err != nil {
+		logMessage(fmt.Sprintf("Failed to parse JSON response from %s: %v", model, err))
+		logMessage(fmt.Sprintf("Raw response body: %s", string(body)))
 		return "", fmt.Errorf("failed to unmarshal JSON response: %v", err)
+	}
+
+	// Debug: Log the response structure
+	logMessage(fmt.Sprintf("Response from %s - Candidates: %d", model, len(geminiResp.Candidates)))
+	if len(geminiResp.Candidates) > 0 {
+		logMessage(fmt.Sprintf("First candidate has %d parts", len(geminiResp.Candidates[0].Content.Parts)))
 	}
 
 	if len(geminiResp.Candidates) > 0 && len(geminiResp.Candidates[0].Content.Parts) > 0 {
 		text := geminiResp.Candidates[0].Content.Parts[0].Text
 		if text == "" {
+			logMessage(fmt.Sprintf("Empty text in response from %s", model))
 			return "", fmt.Errorf("no text found in response")
 		}
 		return strings.TrimSpace(text), nil
 	}
 
+	// Log the full response for debugging
+	logMessage(fmt.Sprintf("Unexpected response structure from %s: %s", model, string(body)))
 	return "", fmt.Errorf("unexpected response structure from API")
 }

@@ -566,7 +566,6 @@ func (app *AppState) transcribeWithRest(audioData []byte, model string) (string,
 		},
 		GenerationConfig: GenerationConfig{
 			Temperature:     0.1,
-			MaxOutputTokens: 1000,
 		},
 	}
 

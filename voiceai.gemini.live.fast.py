@@ -44,10 +44,6 @@ GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash-exp
 GEMINI_PROMPT_TEXT = os.getenv("GEMINI_PROMPT_TEXT", "Transcribe this audio accurately and quickly.")
 GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-1.5-flash-8b")
 
-# Audio processing settings
-MAX_SEGMENT_SIZE_MB = float(os.getenv("MAX_SEGMENT_SIZE_MB", "2.0"))  # Split if larger
-SPEED_MULTIPLIER = float(os.getenv("SPEED_MULTIPLIER", "2.0"))  # For very large files
-
 # YAD Notification Configuration
 ICON_NAME_IDLE = "audio-input-microphone"
 ICON_NAME_RECORDING = "media-record"
@@ -207,19 +203,6 @@ def get_audio_size_mb(audio_data):
     """Get audio size in MB."""
     return len(audio_data) / (1024 * 1024)
 
-def speed_up_audio(input_file, output_file, speed_factor=2.0):
-    """Speed up audio using ffmpeg without changing pitch."""
-    try:
-        cmd = [
-            "ffmpeg", "-i", input_file, "-filter:a", f"atempo={speed_factor}",
-            "-y", output_file
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        log_message(f"Error speeding up audio: {e}")
-        return False
-
 def _transcribe_single_wav(wav_data, model_name):
     """Transcribe a single WAV data byte array with one specific model."""
     try:
@@ -291,7 +274,6 @@ def process_audio_with_advanced_features(audio_data):
     """
     transcribed_text = None
     wav_data = None
-    temp_dir = None
     
     try:
         # Create proper WAV file in memory
@@ -309,33 +291,6 @@ def process_audio_with_advanced_features(audio_data):
         
         audio_to_process = wav_data
         
-        # If audio is large, we may speed it up
-        if audio_size_mb > MAX_SEGMENT_SIZE_MB:
-            log_message(f"Large audio detected ({audio_size_mb:.2f} MB).")
-            
-            # Create temporary directory for processing
-            temp_dir = tempfile.mkdtemp(prefix="voice_ai_")
-            temp_wav_file = os.path.join(temp_dir, "input.wav")
-            
-            # Save WAV data to temp file
-            with open(temp_wav_file, 'wb') as f:
-                f.write(wav_data)
-            
-            process_file = temp_wav_file
-            # Check if we need to speed up audio
-            if audio_size_mb > MAX_SEGMENT_SIZE_MB * 2:
-                log_message(f"Very large audio. Applying {SPEED_MULTIPLIER}x speed...")
-                speed_file = os.path.join(temp_dir, "speed.wav")
-                if speed_up_audio(temp_wav_file, speed_file, SPEED_MULTIPLIER):
-                    process_file = speed_file
-                    log_message("Audio speed increased successfully")
-                else:
-                    log_message("Speed increase failed, continuing with original")
-            
-            # Read the processed file back into memory
-            with open(process_file, 'rb') as f:
-                audio_to_process = f.read()
-
         # Now, transcribe the audio_to_process
         log_message("Processing audio directly...")
         transcribed_text = transcribe_wav_data(audio_to_process)
@@ -348,9 +303,6 @@ def process_audio_with_advanced_features(audio_data):
             
             if copy_successful:
                 cleanup_temp_audio()
-                if temp_dir and os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
-                    log_message("Cleaned up temporary files")
             else:
                 log_message("Clipboard copy failed. Audio RETAINED for debugging.")
                 save_audio_for_debugging(audio_data, wav_data)
@@ -365,13 +317,6 @@ def process_audio_with_advanced_features(audio_data):
             save_audio_for_debugging(audio_data, wav_data)
         else:
             log_message("Could not save audio - WAV data not created")
-    
-    finally:
-        if temp_dir and os.path.exists(temp_dir):
-            try:
-                shutil.rmtree(temp_dir)
-            except Exception as e:
-                log_message(f"Error cleaning up temp directory: {e}")
 
 def transcription_loop(audio_stream, result_queue):
     """
@@ -483,10 +428,6 @@ def main():
 
     log_message("Gemini API key configured for ADVANCED FAST processing.")
 
-    # Check for ffmpeg
-    if not check_command("ffmpeg"):
-        log_message("WARNING: ffmpeg not found. Speed-up for large audio files will be disabled.")
-
     session_type = os.getenv("XDG_SESSION_TYPE", "x11").lower()
     clipboard_tool = "wl-copy" if "wayland" in session_type else "xclip"
     if not check_command(clipboard_tool): sys.exit(1)
@@ -527,8 +468,7 @@ def main():
         log_message("WARNING: Tray icon is INACTIVE.")
 
     log_message(f"ADVANCED FAST Voice AI script started (PID {os.getpid()}). Send SIGUSR1 to toggle recording.")
-    log_message(f"Features: Fallback model, Speed adjustment")
-    log_message(f"Config: Max segment size: {MAX_SEGMENT_SIZE_MB}MB, Speed multiplier: {SPEED_MULTIPLIER}x")
+    log_message(f"Features: Fallback model")
 
     # --- Main Loop ---
     while True:

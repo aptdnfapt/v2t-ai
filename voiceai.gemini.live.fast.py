@@ -205,10 +205,13 @@ def get_audio_size_mb(audio_data):
 
 def _transcribe_single_wav(wav_data, model_name):
     """Transcribe a single WAV data byte array with one specific model."""
+    log_message(f"Transcribing with {model_name}...")
+    start_time = time.time()
+
     try:
         # Base64 encode
         base64_audio_data = base64.b64encode(wav_data).decode('utf-8')
-        
+
         # Create API payload
         json_payload = {
             "contents": [{
@@ -222,37 +225,45 @@ def _transcribe_single_wav(wav_data, model_name):
                 "maxOutputTokens": 1000
             }
         }
-        
+
         api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
-        
-        log_message(f"Transcribing with {model_name}...")
-        start_time = time.time()
-        
-        with requests.Session() as session:
-            response = session.post(api_url, headers=headers, json=json_payload, timeout=20)
-            response.raise_for_status()
-        
+
+        # Make the API call
+        response = requests.post(api_url, headers=headers, json=json_payload)
+
         api_time = time.time() - start_time
-        log_message(f"Completed in {api_time:.2f}s")
-        
+        log_message(f"API call to {model_name} completed in {api_time:.2f}s with status code {response.status_code}")
+
+        response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+
         response_json = response.json()
-        
+
         try:
             text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
             return text
-        except (KeyError, IndexError, TypeError):
-            log_message(f"No text found in response from {model_name}")
+        except (KeyError, IndexError, TypeError) as e:
+            log_message(f"ERROR: Could not extract text from {model_name} response. Response: {response_json}. Error: {e}")
             return None
-            
+
     except requests.exceptions.HTTPError as e:
-        log_message(f"HTTP error with {model_name}: {e}")
+        log_message(f"ERROR: HTTP error with {model_name}: {e}")
+        if e.response is not None:
+            log_message(f"Response status code: {e.response.status_code}")
+            log_message(f"Response reason: {e.response.reason}")
+            log_message(f"Response content: {e.response.text}")
+            if e.response.status_code == 429:
+                log_message("This indicates a rate limiting error.")
+        return None
+    except requests.exceptions.RequestException as e:
+        log_message(f"ERROR: A request-related error occurred with {model_name}: {e}")
+        log_message("This could be a network issue, DNS error, or timeout.")
         return None
     except Exception as e:
-        log_message(f"Error transcribing with {model_name}: {e}")
+        log_message(f"ERROR: An unexpected error occurred while transcribing with {model_name}: {e}")
         return None
 
 def transcribe_wav_data(wav_data, use_fallback=True):

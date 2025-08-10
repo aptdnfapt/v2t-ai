@@ -51,7 +51,7 @@ TOOLTIP_PROCESSING = "Voice Input: Processing..."
 YAD_NOTIFICATION_COMMAND_CLICK = ":"
 
 # System Configuration
-PID_FILE = "/tmp/voice_input_chutes.pid"
+PID_FILE = "/tmp/voice_input_gemini.pid"
 AUDIO_FILE_TMP = "/tmp/voice_input_audio_fast.wav"
 
 # --- Global State ---

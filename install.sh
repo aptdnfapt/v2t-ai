@@ -2,7 +2,7 @@
 
 set -e
 
-echo "Installing VoiceAI TUI v1.0.0..."
+echo "Installing VoiceAI TUI v1.0.1..."
 
 # Configuration
 REPO="aptdnfapt/v2t-ai"
@@ -18,16 +18,21 @@ curl -L "https://github.com/$REPO/releases/latest/download/voiceai-tui" -o "$INS
 # Make binary executable
 chmod +x "$INSTALL_DIR/voiceai-tui"
 
-# Download Python scripts to same directory
-echo "Downloading Python scripts..."
+# Download Python scripts and requirements to same directory
+echo "Downloading Python scripts and dependencies..."
 cd /tmp
 curl -L "https://raw.githubusercontent.com/$REPO/main/voiceai.gemini.live.fast.py" -o "voiceai.gemini.live.fast.py"
+curl -L "https://raw.githubusercontent.com/$REPO/main/requirements.txt" -o "requirements.txt"
 
 # Copy Python scripts to install directory
 cp voiceai.gemini.live.fast.py "$INSTALL_DIR/"
 
 # Make Python scripts executable
 chmod +x "$INSTALL_DIR/voiceai.gemini.live.fast.py"
+
+# Install Python dependencies
+echo "Installing Python dependencies..."
+pip3 install --user -r requirements.txt
 
 # Create .voiceai_history directory
 HISTORY_DIR="$HOME/.voiceai_history"

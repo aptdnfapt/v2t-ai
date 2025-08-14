@@ -1,110 +1,140 @@
-# Gemini Voice-to-Text Transcription Scripts
+# VoiceAI - Gemini Voice-to-Text Transcription with TUI
 
-This repository contains two Python scripts for real-time voice-to-text transcription using Google's Gemini API. The transcribed text is automatically copied to the system clipboard.
+VoiceAI is a powerful voice-to-text transcription tool that uses Google's Gemini API for accurate, real-time transcription. This repository contains both a Python backend for audio processing and a sleek Terminal User Interface (TUI) built with Go for easy management of recordings.
 
--   `voiceai.gemini.py`: A headless, command-line-only version.
--   `voiceai.gemini.yad-systray.py`: A version that provides a system tray icon using `yad` to give visual feedback on the recording status.
+The transcribed text is automatically copied to your system clipboard, making it easy to use in any application.
+
+Description : So you hit a key bind and it starts recordings and then you hit that same key binds again to stop the recording and gets the voice to text back 
+
+## Quick Installation
+
+For a quick installation, run:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/aptdnfapt/v2t-ai/main/install.sh | bash
+```
+
+This will download and install both the TUI application and the Python transcription backend to `~/.local/bin/`, and prompt you for your Gemini API key.
 
 ## Features
 
--   **Simple Control**: Start and stop recording with a single global hotkey.
--   **Clipboard Integration**: Transcribed text is automatically copied to your clipboard using `xclip` (for X11) or `wl-copy` (for Wayland).
--   **Visual Feedback (Systray version)**: A tray icon indicates whether the script is idle (microphone) or recording (red dot).
--   **Robust**: Includes PID file management to prevent multiple instances and proper resource cleanup.
--   **Configurable**: Set your API key, and optionally customize the Gemini model and transcription prompt, via a `.env` file. Audio recording parameters remain configurable within the scripts.
--   **Retry Logic**: Automatically retries transcription requests to the Gemini API on failure.
+-   **Terminal User Interface (TUI)**: Modern, intuitive terminal interface for managing voice recordings
+-   **Fast Transcription**: Optimized Python backend using Gemini API for quick, accurate transcriptions
+-   **Clipboard Integration**: Transcribed text is automatically copied to your clipboard
+-   **Recording Management**: View, play back, and retry transcriptions of previous recordings
+-   **System Tray Integration**: Visual feedback with system tray icon indicating recording status
+-   **Robust**: Includes PID file management to prevent multiple instances and proper resource cleanup
+-   **Configurable**: Set your API key during installation, with optional customization of Gemini model and transcription prompt
+-   **Retry Logic**: Automatically retries transcription requests to the Gemini API on failure
 
-## 1. Requirements
+## Requirements
 
 ### System Dependencies
 
-You need the following command-line tools installed.
+VoiceAI requires the following command-line tools to be installed on your system:
 
 -   `arecord`: For audio recording (part of ALSA).
 -   `xclip`: For copying text to the clipboard on **X11**.
 -   `wl-clipboard`: Provides `wl-copy` for clipboard on **Wayland**.
--   `yad`: For the system tray icon (only for the `yad-systray` version).
--   `file`: To determine the audio file's MIME type.
+-   `yad`: For the system tray icon.
 
 On **Debian/Ubuntu**, you can install them with:
 ```bash
 sudo apt-get update
-sudo apt-get install alsa-utils xclip wl-clipboard yad file
+sudo apt-get install alsa-utils xclip wl-clipboard yad
 ```
 
 On **Fedora**, you can install them with:
 ```bash
-sudo dnf install alsa-utils xclip wl-clipboard yad file
+sudo dnf install alsa-utils xclip wl-clipboard yad
 ```
 
 ### Python Dependencies
 
-The scripts require the `requests` library to communicate with the Gemini API.
+The Python transcription backend requires the following libraries:
+- `requests`: For API communication with Gemini
+- `python-dotenv`: For environment variable management
 
-Install it using `pip`:
-```bash
-pip install requests
-```
+These will be automatically installed during the quick installation process.
 
-## 2. Setup and Configuration
+## Setup and Configuration
 
-### Step 2.1: Get the Scripts
+### Quick Installation (Recommended)
 
-Clone this repository or download the script files to a directory on your computer, for example, `~/scripts/`.
-
-```bash
-# Example:
-git clone <repository_url> ~/scripts/gemini-voice
-cd ~/scripts/gemini-voice
-```
-
-### Step 2.2: Configure Environment Variables
-
-1.  Obtain a Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
-2.  Create a `.env` file by copying the example file:
-    ```bash
-    cp .env.example .env
-    ```
-3.  Open the `.env` file in your editor (e.g., `nano .env`) and configure the variables:
-    -   `GEMINI_API_KEY`: **(Required)** Paste your API key here.
-    -   `GEMINI_MODEL_NAME`: (Optional) The Gemini model to use. Defaults to `gemini-1.5-flash-latest`.
-    -   `GEMINI_PROMPT_TEXT`: (Optional) The prompt sent to the API with the audio. Defaults to `"Transcribe this audio recording."`.
-
-    Your `.env` file should look something like this:
-    ```
-    GEMINI_API_KEY="your_actual_api_key_goes_here"
-    GEMINI_MODEL_NAME="gemini-1.5-flash-latest"
-    GEMINI_PROMPT_TEXT="Transcribe this audio recording."
-    ```
-
-
-### Step 2.3: Make Scripts Executable
-
-Navigate to the directory where you saved the scripts and make them executable:
+For most users, the quickest way to install VoiceAI is to run:
 
 ```bash
-chmod +x voiceai.gemini.py voiceai.gemini.yad-systray.py
+curl -sSL https://raw.githubusercontent.com/aptdnfapt/v2t-ai/main/install.sh | bash
 ```
 
-## 3. Usage
+This will:
+1. Download and install the TUI application and Python backend to `~/.local/bin/`
+2. Prompt you for your Google Gemini API key and create a `.env` file
+3. Install required Python dependencies
 
-The intended way to use these scripts is to have one running in the background and trigger it with a global keyboard shortcut.
 
-### Step 3.1: Set Up a Global Hotkey
-
-The scripts listen for a `SIGUSR1` signal to toggle recording on and off. You need to bind a command that sends this signal to a key of your choice. There are two common ways to do this.
-
-#### Method 1: Using `pkill` (Simpler)
-
-This command finds the script process by its name and sends the signal. It's easy but can fail if you have other processes with `voiceai.gemini` in their name.
+Then to use it you need to run on terminal or make a key bind that runs it . Check the section bellow . Running this starts the recordings and changes the icon for yad in system tray indicating that its recording and running it again stops the recordings and saves it sends to gemini and gets the text in your clipboard for you to paste .
 
 ```bash
-pkill -USR1 -f voiceai.gemini
+sh -c 'kill -s USR1 $(cat /tmp/voice_input_gemini.pid)'
 ```
 
-#### Method 2: Using the PID File (More Robust)
+### Manual Installation
 
-This command reads the Process ID (PID) from the file created by the script (`/tmp/voice_input_gemini.pid`) and sends the signal directly to that specific process. This is the recommended method.
+If you prefer to install manually:
+
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/aptdnfapt/v2t-ai.git
+   cd v2t-ai
+   ```
+
+2. Obtain a Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
+
+3. Run the installation script:
+   ```bash
+   ./install.sh
+   ```
+
+4. The script will prompt you for your API key and automatically create the `.env` file in `~/.voiceai_history/`.
+
+## Usage
+
+VoiceAI consists of two components:
+1. A background Python service that handles audio recording and transcription
+2. A Terminal User Interface (TUI) for managing recordings and settings
+
+### Starting the Background Service
+
+The Python transcription service needs to be running in the background to handle voice recordings. Start it with:
+
+```bash
+voiceai.gemini.live.fast.py
+```
+
+This will start the service with a system tray icon indicating its status.
+
+### Using the TUI
+
+Once the background service is running, you can start the TUI to manage your recordings:
+
+```bash
+voiceai-tui
+```
+
+The TUI provides a clean interface where you can:
+- View previous recordings
+- Play back audio files
+- Retry transcriptions
+- Copy text to clipboard
+
+### Setting Up a Global Hotkey
+
+To toggle voice recording, you need to set up a global hotkey that sends a `SIGUSR1` signal to the background service.
+
+#### Using the PID File (Recommended)
+
+This command reads the Process ID (PID) from the file created by the script (`/tmp/voice_input_gemini.pid`) and sends the signal directly:
 
 ```bash
 sh -c 'kill -s USR1 $(cat /tmp/voice_input_gemini.pid)'
@@ -116,7 +146,7 @@ Go to your desktop environment's or window manager's keyboard settings and creat
 
 -   **For Desktop Environments (GNOME, KDE, XFCE, etc.)**:
     -   Go to Settings -> Keyboard -> Custom Shortcuts.
-    -   Create a new shortcut and paste one of the commands above (the PID file method is recommended).
+    -   Create a new shortcut with the command above.
     -   Assign it to a convenient hotkey (e.g., `Super`+`Shift`+`R`).
 
 -   **For Tiling Window Managers (like i3wm)**:
@@ -127,89 +157,86 @@ Go to your desktop environment's or window manager's keyboard settings and creat
     bindsym Ctrl+Mod1+v exec --no-startup-id sh -c 'kill -s USR1 $(cat /tmp/voice_input_gemini.pid)'
     ```
 
-### Step 3.2: Choosing and Running the Script
+## Running VoiceAI on Startup
 
-Before setting up the hotkey, decide which script you want to run:
+To make VoiceAI truly useful, you'll want both the background service and TUI to start automatically when you log in.
 
--   `voiceai.gemini.yad-systray.py`: **Recommended for X11 users.** Provides a system tray icon for visual feedback on recording status. Requires `yad` to be installed. **Note:** This script relies on `yad` for the tray icon, which may not work reliably on all **Wayland** setups.
--   `voiceai.gemini.py`: A headless version with no graphical icon. It prints status messages to the terminal or a log file. **Recommended for Wayland users.**
+### Method 1: Using Desktop Environment Autostart
 
-You must start your chosen script *before* you can use the hotkey. The rest of this guide will assume you are using the `yad-systray` version for X11 or the headless version for Wayland.
+This is the most robust method for most desktop environments (GNOME, KDE, XFCE, etc.).
 
-To test it, run it from your terminal:
-```bash
-/path/to/your/script/voiceai.gemini.yad-systray.py # For X11
-# OR
-/path/to/your/script/voiceai.gemini.py # For Wayland
-```
-If using the systray version, you should see a microphone icon appear in your system tray. Now try your hotkey. The icon should turn into a red dot while recording. Press it again to stop, and the transcribed text will be copied to your clipboard.
-
-## 4. Running the Script on Startup
-
-To make the script truly useful, you want it to start automatically when you log in.
-
-### Method 1: Using Desktop Environment Autostart (Solid)
-
-This is the most robust method for most desktop environments (GNOME, KDE, XFCE, etc.) as it ensures the script runs correctly within your graphical session.
-
-1.  Create a `.desktop` file in `~/.config/autostart/`, for example `voice-input-gemini.desktop`.
-2.  Add the following content, making sure to use the **absolute path** to your script:
+1.  Create a `.desktop` file in `~/.config/autostart/`, for example `voiceai-service.desktop`.
+2.  Add the following content:
 
     ```ini
     [Desktop Entry]
-    Name=Gemini Voice Input
-    Comment=Starts the Gemini voice transcription script
-    Exec=/home/your_user/scripts/gemini-voice/voiceai.gemini.yad-systray.py
+    Name=VoiceAI Service
+    Comment=Starts the VoiceAI transcription service
+    Exec=/home/your_user/.local/bin/voiceai.gemini.live.fast.py
     Icon=audio-input-microphone
     Terminal=false
     Type=Application
     Categories=Utility;
     ```
-    **Note for Wayland users**: The `yad-systray` script may not work correctly. You should change the `Exec` line to point to the headless script: `Exec=/home/your_user/scripts/gemini-voice/voiceai.gemini.py`
 
-3.  Make it executable: `chmod +x ~/.config/autostart/voice-input-gemini.desktop`.
+3.  Make it executable: `chmod +x ~/.config/autostart/voiceai-service.desktop`.
 
-This will start the script automatically after you log in.
+This will start the background service automatically after you log in. You can then launch the TUI manually when needed with `voiceai-tui`.
 
-### Alternative Method: Using tmux (Recommended who like to use terminal)
+### Method 2: Using tmux for Terminal-Based Management
 
-For those who prefer terminal-based management, you can run the script inside a `tmux` session. This keeps the script running in the background while allowing you to easily attach to the session to view logs.
+For those who prefer terminal-based management, you can run the service inside a `tmux` session:
 
-The following is an example bash script to automate this. You can run this script manually after logging in or add it to your shell's startup file (e.g., `~/.profile` or `~/.bashrc`).
-
-**Example `start_voice_ai.sh`:**
 ```bash
 #!/bin/bash
 
-# Start a new detached tmux session named "voice"
-tmux new -d -s voice
+# Start a new detached tmux session named "voiceai"
+tmux new -d -s voiceai
 
-# (Optional) Set a specific microphone as the default source.
-# This line is an EXAMPLE. Use 'pactl list sources' to find your mic's name.
-# You may need to uncomment and adapt it for your system.
-# pactl set-source-port alsa_input.pci-0000_00_0e.0.analog-stereo analog-input-headset-mic
-
-# Send the command to start the voice script to the tmux session.
-# - For X11 with tray icon, use the 'yad-systray' script and 'export DISPLAY=:0'.
-# - For Wayland, use the headless 'voiceai.gemini.py' script (no DISPLAY needed).
-#
-# MAKE SURE to use the absolute path to your script.
-
-# Example for X11:
-tmux send-keys -t voice "export DISPLAY=:0 && python3 /home/user/scripts/voiceai.gemini.yad-systray.py" C-m
-
-# Example for Wayland (uncomment to use):
-# tmux send-keys -t voice "python3 /home/user/scripts/voiceai.gemini.py" C-m
+# Send the command to start the voice service to the tmux session
+tmux send-keys -t voiceai "export DISPLAY=:0 && ~/.local/bin/voiceai.gemini.live.fast.py" C-m
 ```
 
-**How to use this script:**
+Save this script and run it after logging in, or add it to your shell's startup file.
 
-1.  Save the content above to a file, e.g., `~/start_voice_ai.sh`.
-2.  **Edit the script:**
-    *   Choose the correct `tmux send-keys` command for your session (X11 or Wayland) and comment out the other one.
-    *   Replace the example path (`/home/user/scripts/...`) with the **absolute path** to the script on your machine.
-    *   If needed, customize the `pactl` command for your microphone.
-3.  Make the script executable: `chmod +x ~/start_voice_ai.sh`.
-4.  Run it from your terminal: `~/start_voice_ai.sh`.
+## Using the Terminal User Interface (TUI)
 
-The script is now running in the background. You can check its output with `tmux attach -t voice`. To detach from the session (leaving the script running), press `Ctrl+b` then `d`.
+VoiceAI includes a modern TUI built with Go that provides an intuitive interface for managing your voice recordings. The TUI allows you to:
+
+- View a list of all your previous recordings
+- Play back audio files directly from the interface
+- Retry transcriptions for better accuracy
+- Copy transcribed text to the clipboard with one keypress
+
+To launch the TUI, simply run:
+```bash
+voiceai-tui
+```
+
+The TUI requires the background service to be running. It communicates with the service through Unix signals and file I/O to provide a seamless experience.
+
+### TUI Keybindings
+
+- **Space**: Start/stop recording
+- **Enter**: Play selected audio file
+- **c**: Copy transcription to clipboard
+- **r**: Retry transcription for selected recording
+- **q** or **Ctrl+C**: Quit the application
+
+## Installation Script Details
+
+The installation script (`install.sh`) performs the following actions:
+
+1. Downloads the latest TUI binary to `~/.local/bin/voiceai-tui`
+2. Downloads the Python transcription script to `~/.local/bin/voiceai.gemini.live.fast.py`
+3. Installs required Python dependencies using pip
+4. Creates a `~/.voiceai_history/` directory for storing recordings
+5. Prompts for your Google Gemini API key and creates a `.env` file
+
+The installation script is designed to be run multiple times safely - it will only update existing files and won't overwrite your `.env` file if it already exists.
+
+## Conclusion
+
+VoiceAI provides a complete solution for voice-to-text transcription on Linux systems. With its combination of a fast Python backend and intuitive TUI, it offers both power and ease of use. The system tray integration provides visual feedback, while the TUI offers comprehensive recording management.
+
+By using Google's Gemini API, VoiceAI delivers accurate transcriptions that are automatically copied to your clipboard for immediate use in any application.

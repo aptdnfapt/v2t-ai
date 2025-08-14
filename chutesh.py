@@ -231,7 +231,23 @@ def transcribe_with_chutes(wav_data):
         response_json = response.json()
 
         try:
-            text = response_json.get("text", "").strip()
+            # Handle both dictionary and list responses
+            if isinstance(response_json, list):
+                # If it's a list, try to get the first item
+                if len(response_json) > 0:
+                    first_item = response_json[0]
+                    if isinstance(first_item, dict):
+                        text = first_item.get("text", "").strip()
+                    else:
+                        text = str(first_item).strip()
+                else:
+                    text = ""
+            elif isinstance(response_json, dict):
+                # If it's a dictionary, get the text field
+                text = response_json.get("text", "").strip()
+            else:
+                # If it's neither, convert to string
+                text = str(response_json).strip()
             return text
         except (KeyError, IndexError, TypeError) as e:
             log_message(f"ERROR: Could not extract text from Chutes response. Response: {response_json}. Error: {e}")

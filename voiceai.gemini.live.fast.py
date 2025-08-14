@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 import io
 import wave
 import tempfile
+from datetime import datetime
 
 # --- Introduction ---
 # This script implements an ultra-fast voice-to-text transcription service using optimized Gemini REST API calls.
@@ -56,6 +57,9 @@ YAD_NOTIFICATION_COMMAND_CLICK = ":"
 # System Configuration
 PID_FILE = "/tmp/voice_input_gemini.pid"
 AUDIO_FILE_TMP = "/tmp/voice_input_audio_fast.wav"
+HISTORY_DIR = os.path.expanduser("~/.voiceai_history")
+AUDIO_HISTORY_DIR = os.path.join(HISTORY_DIR, "audio")
+TEXT_HISTORY_DIR = os.path.join(HISTORY_DIR, "text")
 
 # --- Global State ---
 is_recording = False
@@ -279,6 +283,59 @@ def transcribe_wav_data(wav_data, use_fallback=True):
         
     return text
 
+def save_to_history(audio_data, wav_data, transcribed_text):
+    """Save audio and text to history directories."""
+    try:
+        # Create timestamp-based filename
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # Save audio file
+        audio_filename = f"{timestamp}.wav"
+        audio_path = os.path.join(AUDIO_HISTORY_DIR, audio_filename)
+        with open(audio_path, 'wb') as f:
+            f.write(wav_data)
+        log_message(f"Saved audio to history: {audio_path}")
+        
+        # Save text file
+        if transcribed_text:
+            text_filename = f"{timestamp}.txt"
+            text_path = os.path.join(TEXT_HISTORY_DIR, text_filename)
+            with open(text_path, 'w') as f:
+                f.write(transcribed_text)
+            log_message(f"Saved transcription to history: {text_path}")
+        
+        # Keep only last 3 recordings
+        cleanup_history()
+        
+    except Exception as e:
+        log_message(f"Error saving to history: {e}")
+
+def cleanup_history():
+    """Keep only the last 3 recordings in history."""
+    try:
+        # Get all files sorted by modification time
+        audio_files = sorted(
+            [f for f in os.listdir(AUDIO_HISTORY_DIR) if f.endswith('.wav')],
+            key=lambda x: os.path.getmtime(os.path.join(AUDIO_HISTORY_DIR, x)),
+            reverse=True
+        )
+        
+        text_files = sorted(
+            [f for f in os.listdir(TEXT_HISTORY_DIR) if f.endswith('.txt')],
+            key=lambda x: os.path.getmtime(os.path.join(TEXT_HISTORY_DIR, x)),
+            reverse=True
+        )
+        
+        # Remove excess files
+        for f in audio_files[3:]:
+            os.remove(os.path.join(AUDIO_HISTORY_DIR, f))
+            
+        for f in text_files[3:]:
+            os.remove(os.path.join(TEXT_HISTORY_DIR, f))
+            
+    except Exception as e:
+        log_message(f"Error cleaning up history: {e}")
+
 def process_audio_with_advanced_features(audio_data):
     """
     Advanced audio processing with fallback protection.
@@ -309,6 +366,9 @@ def process_audio_with_advanced_features(audio_data):
         # Handle results
         if transcribed_text:
             log_message(f"Final transcription: '{transcribed_text}'")
+            
+            # Save to history before clipboard operations
+            save_to_history(audio_data, wav_data, transcribed_text)
             
             copy_successful = copy_to_clipboard(transcribed_text)
             
@@ -438,6 +498,10 @@ def main():
         sys.exit(1)
 
     log_message("Gemini API key configured for ADVANCED FAST processing.")
+
+    # Create history directories
+    os.makedirs(AUDIO_HISTORY_DIR, exist_ok=True)
+    os.makedirs(TEXT_HISTORY_DIR, exist_ok=True)
 
     session_type = os.getenv("XDG_SESSION_TYPE", "x11").lower()
     clipboard_tool = "wl-copy" if "wayland" in session_type else "xclip"

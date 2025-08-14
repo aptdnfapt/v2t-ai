@@ -210,12 +210,9 @@ def transcribe_with_chutes(wav_data):
         # Base64 encode
         base64_audio_data = base64.b64encode(wav_data).decode('utf-8')
 
-        # Create API payload
+# Create API payload
         json_payload = {
-            "args": {
-                "audio_b64": base64_audio_data,
-                "language": None
-            }
+            "audio_b64": base64_audio_data
         }
 
         headers = {

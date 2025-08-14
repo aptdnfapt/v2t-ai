@@ -39,20 +39,28 @@ HISTORY_DIR="$HOME/.voiceai_history"
 mkdir -p "$HISTORY_DIR"
 
 # Prompt for API key and create .env file
-echo "Please enter your Google Gemini API key:"
+echo "Please enter your Google Gemini API key (required):"
 read -r GEMINI_API_KEY
 
-if [ -n "$GEMINI_API_KEY" ]; then
-    echo "Creating .env file with your API key..."
-    echo "# Google Gemini API Configuration" > "$HISTORY_DIR/.env"
-    echo "GEMINI_API_KEY=$GEMINI_API_KEY" >> "$HISTORY_DIR/.env"
-    echo "API key saved successfully in $HISTORY_DIR/.env"
-else
-    echo "No API key provided. Creating example .env file..."
-    echo "# Google Gemini API Configuration" > "$HISTORY_DIR/.env"
-    echo "GEMINI_API_KEY=your_api_key_here" >> "$HISTORY_DIR/.env"
-    echo "Please edit $HISTORY_DIR/.env with your actual API key later"
+if [ -z "$GEMINI_API_KEY" ]; then
+    echo "ERROR: API key is required for the application to work."
+    echo "Please obtain an API key from Google AI Studio and run this script again."
+    exit 1
 fi
+
+# Prompt for model selection with default
+echo "Please enter the Gemini model you want to use (default: gemini-2.0-flash):"
+read -r GEMINI_MODEL
+
+if [ -z "$GEMINI_MODEL" ]; then
+    GEMINI_MODEL="gemini-2.0-flash"
+fi
+
+echo "Creating .env file with your configuration..."
+echo "# Google Gemini API Configuration" > "$HISTORY_DIR/.env"
+echo "GEMINI_API_KEY=$GEMINI_API_KEY" >> "$HISTORY_DIR/.env"
+echo "GEMINI_MODEL_NAME=$GEMINI_MODEL" >> "$HISTORY_DIR/.env"
+echo "Configuration saved successfully in $HISTORY_DIR/.env"
 
 echo "Installation complete!"
 echo "Run 'voiceai-tui' to start the application"

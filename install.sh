@@ -41,7 +41,7 @@ mkdir -p "$HISTORY_DIR"
 
 # Create default .env file from .env.example
 echo "Creating default .env file..."
-cp .env.example "$HISTORY_DIR/.env"
+cp -rf .env.example "$HISTORY_DIR/.env"
 
 echo "Default configuration saved in $HISTORY_DIR/.env"
 echo "IMPORTANT: You must edit this file to add your Google Gemini API key."

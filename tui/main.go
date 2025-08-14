@@ -105,6 +105,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activeView = listView
 				return m, nil
 			}
+			// Stop any playing audio before quitting
+			if m.isPlaying && m.audioCmd != nil {
+				m.stopAudio()
+			}
 			m.quitting = true
 			return m, tea.Quit
 		case "tab":

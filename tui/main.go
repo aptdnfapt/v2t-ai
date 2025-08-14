@@ -44,6 +44,8 @@ type model struct {
 	audioCmd     *exec.Cmd
 	isPlaying    bool
 	activeList   listType
+	width        int
+	height       int
 }
 
 type view int
@@ -82,13 +84,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		// Handle mouse clicks to switch between sections
 		if msg.Type == tea.MouseLeft {
-			// Simple logic: if click is in upper half, switch to recent, else switch to all
-			if msg.Y < 15 {
+			// Switch to recent list if clicking in upper portion
+			if msg.Y < m.height/2 {
 				if m.activeList != recentListType {
 					m.activeList = recentListType
 					return m, nil
 				}
 			} else {
+				// Switch to all list if clicking in lower portion
 				if m.activeList != allListType {
 					m.activeList = allListType
 					return m, nil
@@ -211,15 +214,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case tea.WindowSizeMsg:
-		h, v := docStyle.GetFrameSize()
-		if m.activeView == listView {
-			// Split window between recent and all lists
-			height := msg.Height - v - 12 // Leave space for headers and messages
-			recentHeight := height / 3
-			allHeight := height - recentHeight - 2
+		m.width = msg.Width
+		m.height = msg.Height
 
-			m.recentList.SetSize(msg.Width-h, recentHeight)
-			m.allList.SetSize(msg.Width-h, allHeight)
+		// Simple sizing - just use the full width and split height
+		if m.activeView == listView {
+			availableHeight := msg.Height - 8 // Leave space for messages and help
+			recentHeight := availableHeight / 3
+			allHeight := availableHeight - recentHeight
+
+			m.recentList.SetSize(msg.Width-2, recentHeight)
+			m.allList.SetSize(msg.Width-2, allHeight)
 		}
 	}
 
@@ -234,32 +239,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// Styling inspired by Charm Crush
+// Simple clean styling
 var (
-	// Color palette
-	indigo       = lipgloss.AdaptiveColor{Light: "#5A56E0", Dark: "#7571F9"}
-	cream        = lipgloss.AdaptiveColor{Light: "#FFFDF5", Dark: "#FFFDF5"}
-	fuschia      = lipgloss.AdaptiveColor{Light: "#EE6FF8", Dark: "#EE6FF8"}
-	green        = lipgloss.AdaptiveColor{Light: "#04B575", Dark: "#04B575"}
-	red          = lipgloss.AdaptiveColor{Light: "#FF4672", Dark: "#ED567A"}
-	subtleIndigo = lipgloss.AdaptiveColor{Light: "#7D79F6", Dark: "#514DC1"}
-
-	// Base styles
-	docStyle = lipgloss.NewStyle().Padding(1, 2)
-
-	// Section styles
-	sectionStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(indigo).
-			Padding(1, 2)
+	docStyle = lipgloss.NewStyle()
 
 	titleStyle = lipgloss.NewStyle().
-			Foreground(indigo).
+			Foreground(lipgloss.Color("69")).
 			Bold(true).
 			MarginBottom(1)
 
 	activeTitleStyle = lipgloss.NewStyle().
-				Foreground(fuschia).
+				Foreground(lipgloss.Color("117")).
 				Bold(true).
 				MarginBottom(1)
 
@@ -268,23 +258,8 @@ var (
 			MarginTop(1)
 
 	messageStyle = lipgloss.NewStyle().
-			Foreground(red).
+			Foreground(lipgloss.Color("205")).
 			Bold(true)
-
-	// Text view styles
-	textViewStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(indigo).
-			Padding(1, 2)
-
-	textTitleStyle = lipgloss.NewStyle().
-			Foreground(fuschia).
-			Bold(true).
-			MarginBottom(1)
-
-	textContentStyle = lipgloss.NewStyle().
-				Foreground(cream).
-				Width(80)
 )
 
 func (m model) View() string {
@@ -317,14 +292,12 @@ func (m model) renderListView() string {
 		m.allList.Styles.Title = titleStyle
 	}
 
-	// Render recent recordings section
-	recentView := sectionStyle.Render(m.recentList.View())
-
-	// Render all recordings section
-	allView := sectionStyle.Render(m.allList.View())
+	// Render sections with full width
+	recentView := m.recentList.View()
+	allView := m.allList.View()
 
 	// Combine sections
-	sections := lipgloss.JoinVertical(lipgloss.Center,
+	sections := lipgloss.JoinVertical(lipgloss.Left,
 		recentView,
 		allView,
 	)
@@ -344,8 +317,8 @@ func (m model) renderListView() string {
 		message = messageStyle.Render("\n" + m.message)
 	}
 
-	return docStyle.Render(
-		lipgloss.JoinVertical(lipgloss.Center,
+	return docStyle.Width(m.width).Render(
+		lipgloss.JoinVertical(lipgloss.Left,
 			sections,
 			message,
 			help,
@@ -354,21 +327,22 @@ func (m model) renderListView() string {
 }
 
 func (m model) renderTextView() string {
-	header := textTitleStyle.Render(m.textData.title)
+	header := activeTitleStyle.Render(m.textData.title)
 
-	content := textContentStyle.Render(m.textData.text)
+	content := lipgloss.NewStyle().
+		Width(m.width - 4).
+		Align(lipgloss.Left).
+		Render(m.textData.text)
 
 	footer := helpStyle.Render("Press 'q' or 'esc' to return to list")
 
-	textView := textViewStyle.Render(
-		lipgloss.JoinVertical(lipgloss.Left,
-			header,
-			content,
-		),
+	textView := lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		content,
 	)
 
 	return docStyle.Render(
-		lipgloss.JoinVertical(lipgloss.Center,
+		lipgloss.JoinVertical(lipgloss.Left,
 			textView,
 			footer,
 		),
@@ -646,14 +620,8 @@ func main() {
 		allItems[i] = r
 	}
 
-	// Create custom delegate for better styling
+	// Create lists with simple delegate
 	delegate := list.NewDefaultDelegate()
-	delegate.Styles.SelectedTitle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("117")).
-		Bold(true)
-	delegate.Styles.SelectedDesc = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240"))
-
 	recentList := list.New(recentItems, delegate, 0, 0)
 	allList := list.New(allItems, delegate, 0, 0)
 
@@ -669,6 +637,8 @@ func main() {
 		recordings: recordings,
 		activeView: listView,
 		activeList: recentListType, // Start with recent list active
+		width:      80,             // Default values
+		height:     24,             // Default values
 	}
 
 	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion()).Run(); err != nil {

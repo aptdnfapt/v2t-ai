@@ -43,6 +43,7 @@ type model struct {
 	messageTimer int
 	audioCmd     *exec.Cmd
 	isPlaying    bool
+	isRetrying   bool
 	activeList   listType
 	width        int
 	height       int
@@ -81,6 +82,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case retryResultMsg:
+		m.isRetrying = false
+		m.message = msg.message
+		m.messageTimer = 120
+
+		if msg.success {
+			// Reload recordings to show updated transcription
+			recordings, err := loadRecordings()
+			if err != nil {
+				m.message = "Transcription completed but failed to refresh list"
+				m.messageTimer = 60
+				return m, nil
+			}
+
+			m.recordings = recordings
+
+			// Update recent list (max 3 items)
+			var recentItems []list.Item
+			if len(recordings) > 0 && recordings[0].ID != "no-recordings" {
+				limit := 3
+				if len(recordings) < 3 {
+					limit = len(recordings)
+				}
+				for i := 0; i < limit; i++ {
+					recentItems = append(recentItems, recordings[i])
+				}
+			} else {
+				recentItems = append(recentItems, recordings[0])
+			}
+			m.recentList.SetItems(recentItems)
+
+			// Update all list
+			allItems := make([]list.Item, len(recordings))
+			for i, r := range recordings {
+				allItems[i] = r
+			}
+			m.allList.SetItems(allItems)
+		}
+
+		return m, nil
 	case tea.MouseMsg:
 		// Handle mouse clicks to switch between sections
 		if msg.Type == tea.MouseLeft {
@@ -321,6 +362,12 @@ func (m model) renderListView() string {
 		message = messageStyle.Render("\n" + m.message)
 	}
 
+	// Add loading indicator when retrying
+	if m.isRetrying {
+		loading := messageStyle.Render("\n🔄 Retrying transcription... Please wait")
+		message = loading
+	}
+
 	return docStyle.Width(m.width).Render(
 		lipgloss.JoinVertical(lipgloss.Left,
 			sections,
@@ -464,73 +511,48 @@ func (m model) retryTranscription(selected recording) (tea.Model, tea.Cmd) {
 	if _, err := os.Stat(audioFile); os.IsNotExist(err) {
 		m.message = fmt.Sprintf("Audio file not found: %s", audioFile)
 		m.messageTimer = 60
+		m.isRetrying = false
 		return m, nil
 	}
 
 	m.message = "Retrying transcription... This may take a moment"
 	m.messageTimer = 120
+	m.isRetrying = true
 
-	// Call the Python script to retry transcription
-	// The Python script is in the parent directory
-	pythonScript := "../voiceai.gemini.live.fast.py"
+	// Return a command that will execute the retry in the background
+	return m, m.executeRetry(audioFile, selected.ID)
+}
 
-	// Check if Python script exists
-	if _, err := os.Stat(pythonScript); os.IsNotExist(err) {
-		// Try alternative path
-		pythonScript = filepath.Join("..", "voiceai.gemini.live.fast.py")
+func (m model) executeRetry(audioFile, recordingID string) tea.Cmd {
+	return func() tea.Msg {
+		// Call the Python script to retry transcription
+		// The Python script is in the parent directory
+		pythonScript := "../voiceai.gemini.live.fast.py"
+
+		// Check if Python script exists
 		if _, err := os.Stat(pythonScript); os.IsNotExist(err) {
-			m.message = "Python script not found for transcription"
-			m.messageTimer = 60
-			return m, nil
+			// Try alternative path
+			pythonScript = filepath.Join("..", "voiceai.gemini.live.fast.py")
+			if _, err := os.Stat(pythonScript); os.IsNotExist(err) {
+				return retryResultMsg{success: false, message: "Python script not found for transcription"}
+			}
 		}
-	}
 
-	// Execute the Python script with the audio file
-	cmd := exec.Command("python3", pythonScript, "--retry", audioFile, selected.ID)
+		// Execute the Python script with the audio file
+		cmd := exec.Command("python3", pythonScript, "--retry", audioFile, recordingID)
 
-	// Run the command and wait for completion
-	if err := cmd.Run(); err != nil {
-		m.message = fmt.Sprintf("Transcription failed: %v", err)
-		m.messageTimer = 60
-		return m, nil
-	}
-
-	// Reload recordings to show updated transcription
-	recordings, err := loadRecordings()
-	if err != nil {
-		m.message = "Transcription completed but failed to refresh list"
-		m.messageTimer = 60
-		return m, nil
-	}
-
-	m.recordings = recordings
-
-	// Update recent list (max 3 items)
-	var recentItems []list.Item
-	if len(recordings) > 0 && recordings[0].ID != "no-recordings" {
-		limit := 3
-		if len(recordings) < 3 {
-			limit = len(recordings)
+		// Run the command and wait for completion
+		if err := cmd.Run(); err != nil {
+			return retryResultMsg{success: false, message: fmt.Sprintf("Transcription failed: %v", err)}
 		}
-		for i := 0; i < limit; i++ {
-			recentItems = append(recentItems, recordings[i])
-		}
-	} else {
-		recentItems = append(recentItems, recordings[0])
+
+		return retryResultMsg{success: true, message: "Transcription retry completed successfully!"}
 	}
-	m.recentList.SetItems(recentItems)
+}
 
-	// Update all list
-	allItems := make([]list.Item, len(recordings))
-	for i, r := range recordings {
-		allItems[i] = r
-	}
-	m.allList.SetItems(allItems)
-
-	m.message = "Transcription retry completed successfully!"
-	m.messageTimer = 120
-
-	return m, nil
+type retryResultMsg struct {
+	success bool
+	message string
 }
 
 func loadRecordings() ([]recording, error) {

@@ -1,0 +1,31 @@
+name: Build and Release TUI
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+        
+    - name: Build Linux binary
+      run: |
+        cd tui
+        go build -o voiceai-tui main.go
+        chmod +x voiceai-tui
+        
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: tui/voiceai-tui
+        generate_release_notes: true
+        draft: false
+        prerelease: false

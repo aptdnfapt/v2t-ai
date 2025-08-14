@@ -39,7 +39,7 @@ ARECORD_CHANNELS = "1"     # Mono audio
 
 # Chutes API settings
 CHUTES_API_TOKEN = os.getenv("CHUTES_API_TOKEN", "")
-CHUTES_API_URL = os.getenv("CHUTES_API_URL", "https://kikakkz-whisper-stt.chutes.ai/v1/transcribe")
+CHUTES_API_URL = "https://chutes-whisper-large-v3.chutes.ai/transcribe"
 
 # YAD Notification Configuration
 ICON_NAME_IDLE = "audio-input-microphone"
@@ -79,8 +79,9 @@ def send_yad_command(command_str):
     global yad_process
     if yad_process and yad_process.poll() is None:
         try:
-            yad_process.stdin.write(f"{command_str.strip()}\n".encode('utf-8'))
-            yad_process.stdin.flush()
+            if yad_process.stdin:
+                yad_process.stdin.write(f"{command_str.strip()}\n".encode('utf-8'))
+                yad_process.stdin.flush()
         except (BrokenPipeError, AttributeError):
             log_message("ERROR: Broken pipe trying to write to yad. It may have crashed.")
             yad_process = None
@@ -211,6 +212,7 @@ def transcribe_with_chutes(wav_data):
 
         # Create API payload
         json_payload = {
+            "language": None,
             "audio_b64": base64_audio_data
         }
 
@@ -358,8 +360,9 @@ def toggle_recording_handler(signum, frame):
             arecord_process = subprocess.Popen(arecord_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             time.sleep(0.1)
             if arecord_process.poll() is not None:
-                err_msg = arecord_process.stderr.read().decode(errors='ignore').strip()
-                log_message(f"ERROR: arecord failed to start: {err_msg}")
+                if arecord_process.stderr:
+                    err_msg = arecord_process.stderr.read().decode(errors='ignore').strip()
+                    log_message(f"ERROR: arecord failed to start: {err_msg}")
                 is_recording = False
             else:
                 log_message("Recording started. Streaming to fast processing...")
@@ -390,8 +393,9 @@ def start_yad_notification():
         yad_process = subprocess.Popen(yad_command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         time.sleep(0.2)
         if yad_process.poll() is not None:
-            err = yad_process.stderr.read().decode(errors='ignore').strip()
-            log_message(f"ERROR: yad failed to start: {err}")
+            if yad_process.stderr:
+                err = yad_process.stderr.read().decode(errors='ignore').strip()
+                log_message(f"ERROR: yad failed to start: {err}")
             return None
         log_message("Yad notification icon started.")
         return yad_process

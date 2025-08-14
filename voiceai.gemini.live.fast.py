@@ -31,7 +31,11 @@ import argparse
 # 6. Fast clipboard operations
 
 # --- Configuration ---
+# Load .env from current directory first, then from ~/.voiceai_history/
 load_dotenv()
+env_path = os.path.expanduser("~/.voiceai_history/.env")
+if os.path.exists(env_path):
+    load_dotenv(env_path, override=False)
 
 # Audio recording settings
 ARECORD_DEVICE = "default"

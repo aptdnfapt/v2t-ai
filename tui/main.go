@@ -525,17 +525,10 @@ func (m model) retryTranscription(selected recording) (tea.Model, tea.Cmd) {
 
 func (m model) executeRetry(audioFile, recordingID string) tea.Cmd {
 	return func() tea.Msg {
-		// Call the Python script to retry transcription
-		// The Python script is in the parent directory
-		pythonScript := "../voiceai.gemini.live.fast.py"
-
-		// Check if Python script exists
-		if _, err := os.Stat(pythonScript); os.IsNotExist(err) {
-			// Try alternative path
-			pythonScript = filepath.Join("..", "voiceai.gemini.live.fast.py")
-			if _, err := os.Stat(pythonScript); os.IsNotExist(err) {
-				return retryResultMsg{success: false, message: "Python script not found for transcription"}
-			}
+		// Find the Python script in common locations
+		pythonScript := findPythonScript()
+		if pythonScript == "" {
+			return retryResultMsg{success: false, message: "Python script not found for transcription"}
 		}
 
 		// Execute the Python script with the audio file
@@ -548,6 +541,25 @@ func (m model) executeRetry(audioFile, recordingID string) tea.Cmd {
 
 		return retryResultMsg{success: true, message: "Transcription retry completed successfully!"}
 	}
+}
+
+// findPythonScript looks for the Python script in common locations
+func findPythonScript() string {
+	// Common paths to check
+	paths := []string{
+		"../voiceai.gemini.live.fast.py", // Original relative path
+		"voiceai.gemini.live.fast.py",    // Current directory
+		"./voiceai.gemini.live.fast.py",  // Explicit current directory
+		filepath.Join(os.Getenv("HOME"), ".local", "bin", "voiceai.gemini.live.fast.py"), // Standard install location
+	}
+
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	return ""
 }
 
 type retryResultMsg struct {

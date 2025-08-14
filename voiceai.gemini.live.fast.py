@@ -17,6 +17,7 @@ import io
 import wave
 import tempfile
 from datetime import datetime
+import argparse
 
 # --- Introduction ---
 # This script implements an ultra-fast voice-to-text transcription service using optimized Gemini REST API calls.
@@ -311,30 +312,49 @@ def save_to_history(audio_data, wav_data, transcribed_text):
         log_message(f"Error saving to history: {e}")
 
 def cleanup_history():
-    """Keep only the last 3 recordings in history."""
+    """Keep only the last 3 audio recordings, but preserve all text transcriptions."""
     try:
-        # Get all files sorted by modification time
+        # Get all audio files sorted by modification time
         audio_files = sorted(
             [f for f in os.listdir(AUDIO_HISTORY_DIR) if f.endswith('.wav')],
             key=lambda x: os.path.getmtime(os.path.join(AUDIO_HISTORY_DIR, x)),
             reverse=True
         )
         
-        text_files = sorted(
-            [f for f in os.listdir(TEXT_HISTORY_DIR) if f.endswith('.txt')],
-            key=lambda x: os.path.getmtime(os.path.join(TEXT_HISTORY_DIR, x)),
-            reverse=True
-        )
-        
-        # Remove excess files
+        # Remove excess audio files (keep only last 3)
         for f in audio_files[3:]:
             os.remove(os.path.join(AUDIO_HISTORY_DIR, f))
             
-        for f in text_files[3:]:
-            os.remove(os.path.join(TEXT_HISTORY_DIR, f))
+        # Keep all text files - no cleanup needed for text transcriptions
             
     except Exception as e:
         log_message(f"Error cleaning up history: {e}")
+
+def retry_transcription(audio_file_path, recording_id):
+    """Retry transcription for a specific audio file."""
+    try:
+        log_message(f"Loading audio file: {audio_file_path}")
+        
+        # Check if audio file exists
+        if not os.path.exists(audio_file_path):
+            log_message(f"ERROR: Audio file not found: {audio_file_path}")
+            return False
+            
+        # Read the audio file
+        with open(audio_file_path, 'rb') as audio_file:
+            audio_data = audio_file.read()
+            
+        log_message(f"Audio file loaded ({len(audio_data)} bytes)")
+        
+        # Process the audio data
+        process_audio_with_advanced_features(audio_data)
+        
+        log_message(f"Transcription retry completed for: {recording_id}")
+        return True
+        
+    except Exception as e:
+        log_message(f"ERROR during transcription retry: {e}")
+        return False
 
 def process_audio_with_advanced_features(audio_data):
     """
@@ -491,6 +511,12 @@ def main():
     """Main function to set up and run the application."""
     global yad_process, clipboard_command, is_processing
 
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Voice AI Transcription Service')
+    parser.add_argument('--retry', nargs=2, metavar=('AUDIO_FILE', 'ID'), 
+                        help='Retry transcription for specific audio file')
+    args = parser.parse_args()
+
     # --- Pre-flight Checks ---
     if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_API_KEY_HERE":
         log_message("ERROR: GEMINI_API_KEY environment variable not set.")
@@ -498,6 +524,13 @@ def main():
         sys.exit(1)
 
     log_message("Gemini API key configured for ADVANCED FAST processing.")
+
+    # Handle retry mode
+    if args.retry:
+        audio_file, recording_id = args.retry
+        log_message(f"Retrying transcription for: {recording_id}")
+        retry_transcription(audio_file, recording_id)
+        return
 
     # Create history directories
     os.makedirs(AUDIO_HISTORY_DIR, exist_ok=True)

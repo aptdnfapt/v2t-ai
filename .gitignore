@@ -6,3 +6,4 @@
 # Binaries
 voiceai-go/voiceai-go
 voiceai-go/main-rest
+tui/voiceai-tui

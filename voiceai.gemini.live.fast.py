@@ -91,8 +91,9 @@ def send_yad_command(command_str):
     global yad_process
     if yad_process and yad_process.poll() is None:
         try:
-            yad_process.stdin.write(f"{command_str.strip()}\n".encode('utf-8'))
-            yad_process.stdin.flush()
+            if yad_process.stdin:
+                yad_process.stdin.write(f"{command_str.strip()}\n".encode('utf-8'))
+                yad_process.stdin.flush()
         except (BrokenPipeError, AttributeError):
             log_message("ERROR: Broken pipe trying to write to yad. It may have crashed.")
             yad_process = None
@@ -399,17 +400,17 @@ def process_audio_with_advanced_features(audio_data):
             if copy_successful:
                 cleanup_temp_audio()
             else:
-                log_message("Clipboard copy failed. Audio RETAINED for debugging.")
-                save_audio_for_debugging(audio_data, wav_data)
+                log_message("Clipboard copy failed. Audio saved to history for retry.")
+                save_to_history(audio_data, wav_data, transcribed_text)
         else:
             log_message("All transcription attempts failed.")
-            log_message(f"Audio RETAINED: {AUDIO_FILE_TMP}")
-            save_audio_for_debugging(audio_data, wav_data)
+            log_message("Audio saved to history for retry.")
+            save_to_history(audio_data, wav_data, transcribed_text)
             
     except Exception as e:
         log_message(f"Error in advanced audio processing: {e}")
         if wav_data:
-            save_audio_for_debugging(audio_data, wav_data)
+            save_to_history(audio_data, wav_data, transcribed_text)
         else:
             log_message("Could not save audio - WAV data not created")
 
@@ -470,7 +471,7 @@ def toggle_recording_handler(signum, frame):
             arecord_process = subprocess.Popen(arecord_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             time.sleep(0.1)
             if arecord_process.poll() is not None:
-                err_msg = arecord_process.stderr.read().decode(errors='ignore').strip()
+                err_msg = arecord_process.stderr.read().decode(errors='ignore').strip() if arecord_process.stderr else "Unknown error"
                 log_message(f"ERROR: arecord failed to start: {err_msg}")
                 is_recording = False
             else:
@@ -502,7 +503,7 @@ def start_yad_notification():
         yad_process = subprocess.Popen(yad_command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         time.sleep(0.2)
         if yad_process.poll() is not None:
-            err = yad_process.stderr.read().decode(errors='ignore').strip()
+            err = yad_process.stderr.read().decode(errors='ignore').strip() if yad_process.stderr else "Unknown error"
             log_message(f"ERROR: yad failed to start: {err}")
             return None
         log_message("Yad notification icon started.")

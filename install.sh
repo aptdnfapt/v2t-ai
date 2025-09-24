@@ -39,13 +39,17 @@ pip3 install --user -r requirements.txt
 HISTORY_DIR="$HOME/.voiceai_history"
 mkdir -p "$HISTORY_DIR"
 
-# Create default .env file from .env.example
-echo "Creating default .env file..."
-cp -rf .env.example "$HISTORY_DIR/.env"
+# Create default .env file from .env.example only if it doesn't exist
+if [ ! -f "$HISTORY_DIR/.env" ]; then
+    echo "Creating default .env file..."
+    cp -rf .env.example "$HISTORY_DIR/.env"
+    echo "Default configuration saved in $HISTORY_DIR/.env"
+    echo "IMPORTANT: You must edit this file to add your Google Gemini API key."
+    echo "Run 'nano ~/.voiceai_history/.env' or 'vim ~/.voiceai_history/.env' to edit it."
+else
+    echo "Existing .env file found, preserving it."
 
-echo "Default configuration saved in $HISTORY_DIR/.env"
-echo "IMPORTANT: You must edit this file to add your Google Gemini API key."
-echo "Run 'nano ~/.voiceai_history/.env' or 'vim ~/.voiceai_history/.env' to edit it."
+
 
 echo "Installation complete!"
 echo "Please edit ~/.voiceai_history/.env to add your Google Gemini API key."

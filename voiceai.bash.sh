@@ -297,33 +297,6 @@ transcribe_audio() {
     
     transcribe_audio_with_retry "$audio_file" "$current_key_index" 3
 }
-}
-EOF
-)
-    
-    # Make API call with curl
-    local response
-    local api_url="https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL_NAME}:generateContent?key=${api_key}"
-    
-    log "Sending request to Gemini API..."
-    response=$(curl -s -X POST "$api_url" \
-        -H "Content-Type: application/json" \
-        -H "Accept: application/json" \
-        -d "$json_payload")
-    
-    # Extract text from response
-    local transcribed_text
-    transcribed_text=$(echo "$response" | jq -r '.candidates[0].content.parts[0].text // empty' 2>/dev/null || echo "")
-    
-    if [[ -n "$transcribed_text" ]]; then
-        echo "$transcribed_text"
-        return 0
-    else
-        log "ERROR: Failed to extract text from response"
-        log "Response: $response"
-        return 1
-    fi
-}
 
 # --- History and Clipboard ---
 get_last_audio_file() {

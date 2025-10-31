@@ -14,11 +14,27 @@ REQUEST_COUNTER_FILE="${HISTORY_DIR}/.voiceai_request_counter"
 CURRENT_KEY_INDEX_FILE="${HISTORY_DIR}/.voiceai_current_key_index"
 LAST_AUDIO_FILE="${HISTORY_DIR}/.last_audio_file"
 
+# PID File (same as Python script)
+PID_FILE="/tmp/voice_input_gemini.pid"
+
+# YAD Notification Configuration (same as Python script)
+ICON_NAME_IDLE="audio-input-microphone"
+ICON_NAME_RECORDING="media-record"
+ICON_NAME_PROCESSING="system-search"
+TOOLTIP_IDLE="Voice Input: Idle (Press keybind to record)"
+TOOLTIP_RECORDING="Voice Input: Recording... (Press keybind to stop)"
+TOOLTIP_PROCESSING="Voice Input: Processing..."
+YAD_NOTIFICATION_COMMAND_CLICK=":"
+
 # Runtime variables
 TEMP_AUDIO=""
 PROCESSED_AUDIO=""
 RETRY_MODE=false
 SPECIFIED_AUDIO_FILE=""
+IS_RECORDING=false
+IS_PROCESSING=false
+ARECORD_PID=""
+YAD_PID=""
 
 # Default values
 DEFAULT_ARECORD_DEVICE="default"
@@ -78,6 +94,174 @@ load_env() {
 setup_directories() {
     mkdir -p "$AUDIO_HISTORY_DIR" "$TEXT_HISTORY_DIR"
     log "Created history directories"
+}
+
+# --- YAD System Tray Functions ---
+send_yad_command() {
+    local command_str="$1"
+    if [[ -n "$YAD_PID" ]] && kill -0 "$YAD_PID" 2>/dev/null; then
+        echo "$command_str" >&"${YAD_INPUT_FIFO}"
+    fi
+}
+
+update_tray_icon_state() {
+    if [[ -z "$YAD_PID" ]]; then
+        return
+    fi
+    
+    if [[ "$IS_PROCESSING" == "true" ]]; then
+        send_yad_command "icon:$ICON_NAME_PROCESSING"
+        send_yad_command "tooltip:$TOOLTIP_PROCESSING"
+    elif [[ "$IS_RECORDING" == "true" ]]; then
+        send_yad_command "icon:$ICON_NAME_RECORDING"
+        send_yad_command "tooltip:$TOOLTIP_RECORDING"
+    else
+        send_yad_command "icon:$ICON_NAME_IDLE"
+        send_yad_command "tooltip:$TOOLTIP_IDLE"
+    fi
+}
+
+start_yad_notification() {
+    if ! command -v yad >/dev/null 2>&1; then
+        log "WARNING: yad not found, tray icon disabled"
+        return 1
+    fi
+    
+    # Create FIFO for yad communication
+    local yad_fifo
+    yad_fifo=$(mktemp -u)
+    mkfifo "$yad_fifo"
+    
+    # Start yad in background
+    yad --notification \
+        --image="$ICON_NAME_IDLE" \
+        --text="$TOOLTIP_IDLE" \
+        --command="$YAD_NOTIFICATION_COMMAND_CLICK" \
+        --listen < "$yad_fifo" &
+    
+    YAD_PID=$!
+    YAD_INPUT_FIFO="$yad_fifo"
+    
+    # Give yad time to start
+    sleep 0.2
+    
+    if ! kill -0 "$YAD_PID" 2>/dev/null; then
+        log "ERROR: yad failed to start"
+        rm -f "$yad_fifo"
+        YAD_PID=""
+        return 1
+    fi
+    
+    log "YAD notification icon started (PID: $YAD_PID)"
+    return 0
+}
+
+cleanup_yad() {
+    if [[ -n "$YAD_PID" ]] && kill -0 "$YAD_PID" 2>/dev/null; then
+        send_yad_command "quit"
+        sleep 0.5
+        kill "$YAD_PID" 2>/dev/null || true
+        wait "$YAD_PID" 2>/dev/null || true
+        YAD_PID=""
+    fi
+    if [[ -n "${YAD_INPUT_FIFO:-}" ]]; then
+        rm -f "$YAD_INPUT_FIFO"
+    fi
+}
+
+# --- PID File Management ---
+check_pid_file() {
+    if [[ -f "$PID_FILE" ]]; then
+        local pid
+        pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            log "Script already running (PID $pid). Exiting."
+            exit 1
+        else
+            log "Stale PID file found. Removing."
+            rm -f "$PID_FILE"
+        fi
+    fi
+}
+
+create_pid_file() {
+    echo $$ > "$PID_FILE"
+    log "Created PID file: $PID_FILE"
+}
+
+cleanup_pid_file() {
+    rm -f "$PID_FILE"
+}
+
+# --- Signal Handlers ---
+handle_exit_signal() {
+    log "Received exit signal, cleaning up..."
+    cleanup_yad
+    cleanup_pid_file
+    exit 0
+}
+
+toggle_recording_handler() {
+    log "Received SIGUSR1 signal"
+    
+    if [[ "$IS_RECORDING" == "true" ]]; then
+        log "Signal: Stopping recording..."
+        if [[ -n "$ARECORD_PID" ]] && kill -0 "$ARECORD_PID" 2>/dev/null; then
+            kill "$ARECORD_PID"
+            wait "$ARECORD_PID" 2>/dev/null || true
+        fi
+        IS_RECORDING=false
+        IS_PROCESSING=true
+    else
+        if [[ "$IS_PROCESSING" == "true" ]]; then
+            log "Signal: Ignoring start, currently processing previous recording."
+            return
+        fi
+        
+        log "Signal: Starting recording..."
+        
+        # Create timestamp for recording
+        local timestamp
+        timestamp=$(date '+%Y-%m-%d_%H-%M-%S')
+        
+        # Set audio file paths in history directory
+        TEMP_AUDIO="${AUDIO_HISTORY_DIR}/temp_${timestamp}.wav"
+        PROCESSED_AUDIO="${AUDIO_HISTORY_DIR}/processed_${timestamp}.wav"
+        
+        # Start recording in background
+        arecord -D "$ARECORD_DEVICE" -f "$ARECORD_FORMAT" -r "$ARECORD_RATE" -c "$ARECORD_CHANNELS" "$TEMP_AUDIO" &
+        ARECORD_PID=$!
+        
+        # Give arecord time to start
+        sleep 0.1
+        
+        if ! kill -0 "$ARECORD_PID" 2>/dev/null; then
+            log "ERROR: arecord failed to start"
+            IS_RECORDING=false
+        else
+            log "Recording started via signal..."
+            IS_RECORDING=true
+            
+            # Start processing in background
+            (
+                # Wait for recording to finish
+                wait "$ARECORD_PID" 2>/dev/null || true
+                IS_RECORDING=false
+                IS_PROCESSING=true
+                update_tray_icon_state
+                
+                # Process and transcribe
+                if [[ -f "$TEMP_AUDIO" ]]; then
+                    process_and_transcribe_audio
+                fi
+                
+                IS_PROCESSING=false
+                update_tray_icon_state
+            ) &
+        fi
+    fi
+    
+    update_tray_icon_state
 }
 
 # --- API Key Management ---
@@ -369,6 +553,50 @@ copy_to_clipboard() {
     fi
 }
 
+# --- Audio Processing for Signal Mode ---
+process_and_transcribe_audio() {
+    if [[ ! -f "$TEMP_AUDIO" ]]; then
+        log "ERROR: No audio file created"
+        return 1
+    fi
+    
+    # Process audio with ffmpeg if needed
+    if ! process_audio_with_ffmpeg "$TEMP_AUDIO" "$PROCESSED_AUDIO"; then
+        log "ERROR: Audio processing failed"
+        rm -f "$TEMP_AUDIO"
+        rm -f "$PROCESSED_AUDIO"
+        return 1
+    fi
+    
+    # Get current API key index for transcription
+    local current_key_index=0
+    if [[ -f "$CURRENT_KEY_INDEX_FILE" ]]; then
+        current_key_index=$(cat "$CURRENT_KEY_INDEX_FILE")
+    fi
+    
+    # Transcribe audio with retry logic
+    local transcribed_text
+    if transcribed_text=$(transcribe_audio "$PROCESSED_AUDIO" "$current_key_index"); then
+        log "Transcription successful: '$transcribed_text'"
+        
+        # Save to history
+        save_to_history "$PROCESSED_AUDIO" "$transcribed_text"
+        
+        # Copy to clipboard
+        copy_to_clipboard "$transcribed_text"
+        
+        log "Process completed successfully"
+    else
+        log "Transcription failed"
+        # Still save audio for potential retry
+        save_to_history "$PROCESSED_AUDIO" ""
+    fi
+    
+    # Cleanup
+    rm -f "$TEMP_AUDIO" "$PROCESSED_AUDIO"
+    log "Cleanup completed"
+}
+
 # --- Argument Parsing ---
 parse_arguments() {
     while [[ $# -gt 0 ]]; do
@@ -422,25 +650,22 @@ main() {
     # Parse arguments first
     parse_arguments "$@"
     
-    log "Voice AI Bash Script starting..."
+    # Handle retry mode - skip signal handling and PID file
     if [[ "$RETRY_MODE" == "true" ]]; then
-        log "Mode: Retry transcription"
-    fi
-    
-    # Check dependencies
-    check_command "arecord"
-    check_command "ffmpeg"
-    check_command "curl"
-    check_command "jq"
-    check_command "base64"
-    check_command "bc"
-    
-    # Load configuration
-    load_env
-    setup_directories
-    
-    # Handle retry mode
-    if [[ "$RETRY_MODE" == "true" ]]; then
+        log "Voice AI Bash Script starting in retry mode..."
+        
+        # Check dependencies
+        check_command "ffmpeg"
+        check_command "curl"
+        check_command "jq"
+        check_command "base64"
+        check_command "bc"
+        
+        # Load configuration
+        load_env
+        setup_directories
+        
+        # Handle retry logic
         if [[ -n "$SPECIFIED_AUDIO_FILE" ]]; then
             if [[ ! -f "$SPECIFIED_AUDIO_FILE" ]]; then
                 log "ERROR: Specified audio file not found: $SPECIFIED_AUDIO_FILE"
@@ -460,59 +685,52 @@ main() {
             PROCESSED_AUDIO="${AUDIO_HISTORY_DIR}/processed_retry_$(date '+%Y-%m-%d_%H-%M-%S').wav"
             log "Using last audio file: $last_audio"
         fi
-    fi
-    
-    # Record audio (only in non-retry mode)
-    record_audio
-    
-    if [[ "$RETRY_MODE" != "true" && ! -f "$TEMP_AUDIO" ]]; then
-        log "ERROR: No audio file created"
-        exit 1
-    fi
-    
-    # Process audio with ffmpeg if needed
-    if ! process_audio_with_ffmpeg "$TEMP_AUDIO" "$PROCESSED_AUDIO"; then
-        log "ERROR: Audio processing failed"
-        # In retry mode, don't delete the original audio file
-        if [[ "$RETRY_MODE" != "true" ]]; then
-            rm -f "$TEMP_AUDIO"
-        fi
-        rm -f "$PROCESSED_AUDIO"
-        exit 1
-    fi
-    
-    # Get current API key index for transcription
-    local current_key_index=0
-    if [[ -f "$CURRENT_KEY_INDEX_FILE" ]]; then
-        current_key_index=$(cat "$CURRENT_KEY_INDEX_FILE")
-    fi
-    
-    # Transcribe audio with retry logic
-    local transcribed_text
-    if transcribed_text=$(transcribe_audio "$PROCESSED_AUDIO" "$current_key_index"); then
-        log "Transcription successful: '$transcribed_text'"
         
-        # Save to history
-        save_to_history "$PROCESSED_AUDIO" "$transcribed_text"
-        
-        # Copy to clipboard
-        copy_to_clipboard "$transcribed_text"
-        
-        log "Process completed successfully"
+        # Process and transcribe the audio
+        process_and_transcribe_audio
+        return $?
+    fi
+    
+    # Normal mode - with signal handling and tray icon
+    log "Voice AI Bash Script starting (PID $$)..."
+    
+    # Check PID file
+    check_pid_file
+    
+    # Check dependencies
+    check_command "arecord"
+    check_command "ffmpeg"
+    check_command "curl"
+    check_command "jq"
+    check_command "base64"
+    check_command "bc"
+    
+    # Load configuration
+    load_env
+    setup_directories
+    
+    # Create PID file
+    create_pid_file
+    
+    # Register signal handlers
+    trap handle_exit_signal SIGTERM SIGINT
+    trap toggle_recording_handler SIGUSR1
+    
+    # Start YAD notification
+    if start_yad_notification; then
+        log "Tray icon active"
     else
-        log "Transcription failed"
-        # Still save audio for potential retry
-        save_to_history "$PROCESSED_AUDIO" ""
-        exit 1
+        log "WARNING: Tray icon is INACTIVE"
     fi
     
-    # Cleanup - only delete temp files in non-retry mode
-    if [[ "$RETRY_MODE" != "true" ]]; then
-        rm -f "$TEMP_AUDIO"
-    fi
-    rm -f "$PROCESSED_AUDIO"
-    log "Cleanup completed"
-}
+    log "Voice AI script started. Send SIGUSR1 to toggle recording."
+    log "Features: Round-robin API keys, FFmpeg speedup, retry logic"
+    
+    # Main loop
+    while true; do
+        sleep 0.1
+    done
+  }
 
 # --- Run Main ---
 main "$@"

@@ -231,8 +231,7 @@ def _transcribe_single_wav(wav_data, model_name):
                 ]
             }],
             "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 1000
+                "temperature": 0.1
             }
         }
 
@@ -518,8 +517,8 @@ def main():
 
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Voice AI Transcription Service')
-    parser.add_argument('--retry', nargs=2, metavar=('AUDIO_FILE', 'ID'), 
-                        help='Retry transcription for specific audio file')
+    parser.add_argument('--retry', nargs='?', metavar='AUDIO_FILE', 
+                        help='Retry transcription for last failed audio file or specific audio file')
     args = parser.parse_args()
 
     # --- Pre-flight Checks ---
@@ -531,9 +530,22 @@ def main():
     log_message("Gemini API key configured for ADVANCED FAST processing.")
 
     # Handle retry mode
-    if args.retry:
-        audio_file, recording_id = args.retry
-        log_message(f"Retrying transcription for: {recording_id}")
+    if args.retry is not None:
+        if args.retry:
+            # Specific audio file provided
+            audio_file = args.retry
+            recording_id = os.path.basename(audio_file)
+            log_message(f"Retrying transcription for: {recording_id}")
+        else:
+            # No specific file, try the most recent failed audio
+            if os.path.exists(AUDIO_FILE_TMP):
+                audio_file = AUDIO_FILE_TMP
+                recording_id = "last_failed_recording"
+                log_message("Retrying transcription for last failed recording")
+            else:
+                log_message("No failed audio file found to retry")
+                sys.exit(1)
+        
         retry_transcription(audio_file, recording_id)
         return
 

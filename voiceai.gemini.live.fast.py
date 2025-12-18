@@ -461,10 +461,17 @@ def toggle_recording_handler(signum, frame):
 
         log_message("Signal: Starting recording...")
 
-        # Optimized arecord command for raw PCM data
+        # Optimized FFmpeg command (Modern, Reliable, Future-proof)
         arecord_command = [
-            "arecord", "-D", ARECORD_DEVICE, "-f", ARECORD_FORMAT,
-            "-r", ARECORD_RATE, "-c", ARECORD_CHANNELS, "-t", "raw"
+            "ffmpeg",
+            "-f", "alsa",           # Use the system default audio system
+            "-i", "default",        # Input device
+            "-ac", ARECORD_CHANNELS,# 1 Channel
+            "-ar", ARECORD_RATE,    # 16000 Hz
+            "-f", "s16le",          # Format: Signed 16-bit Little Endian
+            "-acodec", "pcm_s16le", # Force Raw PCM codec
+            "-loglevel", "quiet",   # Shut up (don't print logs to script)
+            "-"                     # Output to Pipe (Standard Output)
         ]
         try:
             arecord_process = subprocess.Popen(arecord_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -556,7 +563,7 @@ def main():
     session_type = os.getenv("XDG_SESSION_TYPE", "x11").lower()
     clipboard_tool = "wl-copy" if "wayland" in session_type else "xclip"
     if not check_command(clipboard_tool): sys.exit(1)
-    if not check_command("arecord"): sys.exit(1)
+    if not check_command("ffmpeg"): sys.exit(1)
 
     if clipboard_tool == "wl-copy":
         clipboard_command = ["wl-copy"]
